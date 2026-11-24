@@ -1,5 +1,4 @@
-#ifndef MAPS_H_
-#define MAPS_H_
+#pragma once
 
 #include <optional>
 #include <set>
@@ -134,6 +133,10 @@ ZC_FORCE_INLINE rpos_t POS_TO_RPOS(int32_t pos, int32_t screen)
 int32_t COMBOPOS(int32_t x, int32_t y);
 // Bounded - if input is not within the bounds of a single screen, returns -1.
 int32_t COMBOPOS_B(int32_t x, int32_t y);
+// Converts world coordinates to a combo pos (0-175) within the screen that contains them, such as
+// the one get_scr_for_world_xy returns. Input must be a valid world coordinate, and the result is
+// only meaningful for that screen's combos.
+int32_t COMBOPOS_IN_SCREEN(int32_t x, int32_t y);
 int32_t COMBOX(int32_t pos);
 int32_t COMBOY(int32_t pos);
 
@@ -596,5 +599,3 @@ void clear_screen_states();
 void screen_item_set_state(int screen, ScreenItemState state);
 
 void mark_visited(int screen);
-
-#endif

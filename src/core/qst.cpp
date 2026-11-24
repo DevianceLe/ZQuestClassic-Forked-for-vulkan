@@ -37,6 +37,7 @@
 #include "advanced_music.h"
 #include "zalleg/zsyssimple.h"
 #include "core/quest_format.h"
+#include <chrono>
 
 extern sprite_list  guys, items, Ewpns, Lwpns, chainlinks, decorations;
 extern void setZScriptVersion(int32_t s_version);
@@ -916,6 +917,9 @@ int32_t read_weap_data(weapon_data& data, PACKFILE* f)
 		}
 		else if (!p_igetw(&(data.burnsprs[q]), f))
 			return qe_invalid;
+		// Only a damaged quest has a sprite past the last one.
+		if (data.burnsprs[q] >= MAXSPRITES)
+			data.burnsprs[q] = 0;
 		if (!p_getc(&(data.light_rads[q]), f))
 			return qe_invalid;
 		if (v_weapon_data >= 3)
@@ -1063,7 +1067,10 @@ int32_t get_qst_buffers()
 	for (auto& guy : guysbuf)
 		guy.clear();
     
-    if((combo_class_buf=(comboclass*)malloc(sizeof(comboclass)*cMAX))==NULL)
+    // One entry for every value a combo's type can hold, not just the valid ones: quests can set
+    // any type, and it indexes this directly.
+    static_assert(cMAX <= 256);
+    if((combo_class_buf=(comboclass*)calloc(256, sizeof(comboclass)))==NULL)
         return 0;
 
 	for(int32_t i=0; i<OLDMAXGUYS; i++)
@@ -1484,6 +1491,11 @@ void init_favorites()
     {
         favorite_combos[i]=-1;
     }
+
+	// Quests from before the favorites section have no map tabs, so don't keep those
+	// of the last quest loaded.
+	for (auto& page : map_page)
+		page = {0, 0};
 }
 
 void reset_subscreens()
@@ -2785,6 +2797,18 @@ static int32_t _lq_int(const char *filename, zquestheader *Header, miscQdata *Mi
 		map_count = 1;
 		map_infos.clear();
 		map_infos.resize(1);
+	}
+
+	if (!get_bit(skip_flags, skip_maps) && !get_bit(skip_flags, skip_dmaps))
+	{
+		// A dmap's screens are looked up in its map without checking it, and only a damaged quest
+		// has a dmap on a map past the last one (the editor moves them when the map count drops).
+		// Dmaps are read before maps, so this waits until both are.
+		for (int i = 0; i < MAXDMAPS; i++)
+		{
+			if (DMaps[i].map >= map_count)
+				DMaps[i].map = 0;
+		}
 	}
 
 	if(loading_tileset_flags & TILESET_CLEARHEADER)

@@ -1,5 +1,4 @@
-#ifndef CORE_SCC_H_
-#define CORE_SCC_H_
+#pragma once
 
 #include "base/general.h"
 
@@ -10,8 +9,7 @@
 #define MIN_SCC_INT (-214748)
 #define MAX_SCC_INT 214748
 
-// The positive literal wraps to INT32_MIN, which zfix::operator-() negates to itself.
-#define MIN_SCC_ARG (-214748.3648_zf)
+#define MIN_SCC_ARG (zfix(MIN_SCC_INT, -3648))
 #define MAX_SCC_ARG 214748.3647_zf
 
 /* Note: Printable ASCII begins at 32 and ends at 126, inclusive. */
@@ -92,7 +90,7 @@ typedef std::array<zfix, MAX_SCC_ARG_COUNT> scc_arg_array;
 struct StringCommand
 {
 	word start; // starting index in source string
-	byte length; // length in source string
+	word length; // length in source string
 	byte code;
 	byte num_args;
 	scc_arg_array args;
@@ -129,5 +127,6 @@ value_and_warnings<ParsedMsgStr> parse_legacy_binary_msg_str(const std::string& 
 // Prepares plain text (e.g. from the clipboard) for insertion into an ascii-encoded msg
 // str: strips '\r' and converts '\n' into the \Newline\ command.
 std::string sanitize_pasted_msg_str_text(std::string_view text);
-
-#endif
+// Whether the text ends with an unescaped '\', which would escape the leading slash of a command
+// placed right after it.
+bool ends_with_unescaped_slash(std::string_view text);

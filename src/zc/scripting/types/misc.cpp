@@ -5,7 +5,10 @@
 #include "core/zdefs.h"
 #include "gamedata.h"
 #include "zc/scripting/common.h"
+#include "zc/scripting/zasm_check.h"
 #include "zc/zscriptversion.h"
+
+extern script_data* curscript;
 
 extern refInfo *ri;
 extern int32_t sarg1;
@@ -54,7 +57,7 @@ int32_t misc_get_register(int32_t reg)
 			break;
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -70,6 +73,9 @@ void misc_set_register(int32_t reg, int32_t value)
 			write_array(game->global_d, GET_D(rINDEX) / 10000, value);
 			break;
 		case PC:
+			// Only hand-written ZASM writes this. The script goes on at the command after it,
+			// which must be in the script.
+			ZASM_CHECK(curscript->valid() && (uint32_t)value < curscript->zasm_script->size - 1);
 			ri->pc = value;
 			break;
 		case SP:
@@ -83,6 +89,6 @@ void misc_set_register(int32_t reg, int32_t value)
 			break;
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 }

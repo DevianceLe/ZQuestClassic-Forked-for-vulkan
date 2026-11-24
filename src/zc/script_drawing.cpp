@@ -2271,7 +2271,7 @@ void do_drawquadr(BITMAP *bmp, int32_t *sdci, int32_t xoffset, int32_t yoffset)
     */
     polytype = vbound(polytype, 0, 14);
     
-    if(((w-1) & w) != 0 || ((h-1) & h) != 0)
+    if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
     {
         Z_message("Quad() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
         return; //non power of two error
@@ -2366,7 +2366,7 @@ void do_drawtriangler(BITMAP *bmp, int32_t *sdci, int32_t xoffset, int32_t yoffs
     
     polytype = vbound(polytype, 0, 14);
     
-    if(((w-1) & w) != 0 || ((h-1) & h) != 0)
+    if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
     {
         Z_message("Quad() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
         return; //non power of two error
@@ -3842,7 +3842,7 @@ void do_drawquad3dr(BITMAP *bmp, int32_t i, int32_t *sdci, int32_t xoffset, int3
     
     polytype = vbound(polytype, 0, 14);
     
-	if(((w-1) & w) != 0 || ((h-1) & h) != 0)
+	if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
 	{
 		Z_message("Quad3d() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
 		return; //non power of two error
@@ -3926,7 +3926,7 @@ void do_drawtriangle3dr(BITMAP *bmp, int32_t i, int32_t *sdci, int32_t xoffset, 
     
     polytype = vbound(polytype, 0, 14);
     
-	if(((w-1) & w) != 0 || ((h-1) & h) != 0)
+	if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
 	{
 		Z_message("Triangle3d() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
 		return; //non power of two error
@@ -5898,7 +5898,19 @@ void bmp_do_regenr(BITMAP*, int32_t *sdci, [[maybe_unused]] int32_t xoffset, [[m
 	auto& usr_bmp = scb.get(bitid);
 	if ( usr_bmp.u_bmp )
 		destroy_bitmap(usr_bmp.u_bmp);
-	usr_bmp.u_bmp = create_bitmap_ex(8,w,h);
+	usr_bmp.u_bmp = nullptr;
+	usr_bmp.width = 0;
+	usr_bmp.height = 0;
+	if (!is_valid_bitmap_size(w, h))
+	{
+		Z_scripterrlog("bitmap->Create() was given an invalid size: %d x %d.\n", w, h);
+		return;
+	}
+
+	usr_bmp.u_bmp = create_script_bitmap(w, h);
+	// Null if it was too big to allocate, the same as a freed bitmap (see checkBitmap).
+	if (!usr_bmp.u_bmp)
+		return;
 	clear_bitmap(usr_bmp.u_bmp);
 	
 	usr_bmp.width = w;
@@ -5937,26 +5949,24 @@ void bmp_do_readr(BITMAP*, int32_t i, int32_t *sdci, [[maybe_unused]] int32_t xo
     
     PALETTE tempPal;
     get_palette(tempPal);
-    if ( util::checkPath(str->c_str(), false) )
+    if (!util::checkPath(str->c_str(), false))
     {
-	    usr_bitmap.u_bmp = load_bitmap(str->c_str(), tempPal);
-	    usr_bitmap.width = usr_bitmap.u_bmp->w;
-	    usr_bitmap.height = usr_bitmap.u_bmp->h;
-	    if ( !usr_bitmap.u_bmp )
-	    {
-		Z_scripterrlog("Failed to load image file %s.\nMaking a blank bitmap on the pointer.\n", str->c_str());
-	    }
-	    else 
-	    {
-		    zprint("Read image file %s\n",str->c_str());
-	    }
+	    Z_scripterrlog("Failed to load image file: %s. File not found. Creating a blank bitmap on the pointer.\n", str->c_str());
+    }
+    else if (!(usr_bitmap.u_bmp = load_bitmap(str->c_str(), tempPal)))
+    {
+	    Z_scripterrlog("Failed to load image file %s.\nMaking a blank bitmap on the pointer.\n", str->c_str());
     }
     else
     {
-	    Z_scripterrlog("Failed to load image file: %s. File not found. Creating a blank bitmap on the pointer.\n", str->c_str());
-	    usr_bitmap.u_bmp = create_bitmap_ex(8,256,176);
-	    clear_bitmap(usr_bitmap.u_bmp);
+	    usr_bitmap.width = usr_bitmap.u_bmp->w;
+	    usr_bitmap.height = usr_bitmap.u_bmp->h;
+	    zprint("Read image file %s\n",str->c_str());
+	    return;
     }
+
+    usr_bitmap.u_bmp = create_bitmap_ex(8,256,176);
+    clear_bitmap(usr_bitmap.u_bmp);
 }
 
 
@@ -6114,6 +6124,12 @@ void bmp_do_drawquadr(BITMAP*, int32_t *sdci, int32_t xoffset, int32_t yoffset)
 	}
 	else
 	{
+		// Before the texture is made from w and h, which it can't be for a bad size.
+		if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
+		{
+			Z_message("Quad() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
+			return; //non power of two error
+		}
 		tex = script_drawing_commands.GetSmallTextureBitmap(w,h);
 		if(!tex)
 		{
@@ -6136,11 +6152,6 @@ void bmp_do_drawquadr(BITMAP*, int32_t *sdci, int32_t xoffset, int32_t yoffset)
 		
 			if(!(c.animflags & AF_EDITOR_ONLY))
 				TileHelper::OldPutTile(tex, tiletodraw, 0, 0, w, h, color, flip);
-		}
-		if(((w-1) & w) != 0 || ((h-1) & h) != 0)
-		{
-			Z_message("Quad() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
-			return; //non power of two error
 		}
 		//Z_scripterrlog("bitmap->Quad() is trying to blit from a bitmap texture.\n");
 		V3D_f V1 = { static_cast<float>(x1+xoffset), static_cast<float>(y1+yoffset), 0, 0,                             0,                              col[0] };
@@ -6243,16 +6254,6 @@ void bmp_do_drawtriangler(BITMAP*, int32_t *sdci, int32_t xoffset, int32_t yoffs
     int32_t tex_width = w*16;
     int32_t tex_height = h*16;
     
-    bool mustDestroyBmp = false;
-    BITMAP *tex = script_drawing_commands.GetSmallTextureBitmap(w,h);
-    
-    if(!tex)
-    {
-        mustDestroyBmp = true;
-        tex = create_bitmap_ex(8, tex_width, tex_height);
-        clear_bitmap(tex);
-    }
-    
     int32_t col[3];
     /*
     if( color < 0 )
@@ -6265,7 +6266,25 @@ void bmp_do_drawtriangler(BITMAP*, int32_t *sdci, int32_t xoffset, int32_t yoffs
     {
         col[0]=col[1]=col[2]=color;
     }
-    
+
+    bool mustDestroyBmp = false;
+    BITMAP *tex = NULL;
+    if ( !tex_is_bitmap )
+    {
+	// Before the texture is made from w and h, which it can't be for a bad size.
+	if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
+	{
+		Z_message("bitmap->Triangle() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
+		return; //non power of two error
+	}
+	tex = script_drawing_commands.GetSmallTextureBitmap(w,h);
+	if(!tex)
+	{
+		mustDestroyBmp = true;
+		tex = create_bitmap_ex(8, tex_width, tex_height);
+		clear_bitmap(tex);
+	}
+
     if(tile > 0)   // TILE
     {
         TileHelper::OverTile(tex, tile, 0, 0, w, h, color, flip);
@@ -6279,13 +6298,6 @@ void bmp_do_drawtriangler(BITMAP*, int32_t *sdci, int32_t xoffset, int32_t yoffs
         if(!(c.animflags & AF_EDITOR_ONLY))
 			TileHelper::OldPutTile(tex, tiletodraw, 0, 0, w, h, color, flip);
     }
-    if ( !tex_is_bitmap )
-    {
-	if(((w-1) & w) != 0 || ((h-1) & h) != 0)
-	{
-		Z_message("bitmap->Triangle() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
-		return; //non power of two error
-	}
 	V3D_f V1 = { static_cast<float>(x1+xoffset), static_cast<float>(y1+yoffset), 0, 0,                             0,                              col[0] };
 	V3D_f V2 = { static_cast<float>(x2+xoffset), static_cast<float>(y2+yoffset), 0, 0,                             static_cast<float>(tex_height), col[1] };
 	V3D_f V3 = { static_cast<float>(x3+xoffset), static_cast<float>(y3+yoffset), 0, static_cast<float>(tex_width), static_cast<float>(tex_height), col[2] };
@@ -10564,6 +10576,12 @@ void bmp_do_drawquad3dr(BITMAP*, int32_t i, int32_t *sdci, int32_t xoffset, int3
 	
 	if ( !tex_is_bitmap )
 	{
+	// Before the texture is made from w and h, which it can't be for a bad size.
+	if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
+	{
+		Z_message("Quad3d() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
+		return; //non power of two error
+	}
 	tex = script_drawing_commands.GetSmallTextureBitmap(w,h);
 	
 	if(!tex)
@@ -10571,11 +10589,6 @@ void bmp_do_drawquad3dr(BITMAP*, int32_t i, int32_t *sdci, int32_t xoffset, int3
 		mustDestroyBmp = true;
 		tex = create_bitmap_ex(8, tex_width, tex_height);
 		clear_bitmap(tex);
-	}
-	if(((w-1) & w) != 0 || ((h-1) & h) != 0)
-	{
-		Z_message("Quad3d() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
-		return; //non power of two error
 	}
 	if(tile > 0)   // TILE
 		{
@@ -10679,7 +10692,7 @@ void bmp_do_drawtriangle3dr(BITMAP*, int32_t i, int32_t *sdci, int32_t xoffset, 
 	int32_t quad_render_source = sdci[9];
 	polytype = vbound(polytype, 0, 14);
 	
-	if(((w-1) & w) != 0 || ((h-1) & h) != 0)
+	if(w < 1 || h < 1 || ((w-1) & w) != 0 || ((h-1) & h) != 0)
 	{
 		Z_message("bitmap->Triangle3d() : Args h, w, must be in powers of two! Power of 2 error with %i, %i.", w, h);
 		return; //non power of two error
@@ -12031,6 +12044,12 @@ void do_primitives(BITMAP *targetBitmap, int32_t type, int32_t xoff, int32_t yof
 	// drawing command instead of building a new one per command.
 	static refInfo loggingRi;
 
+	// Old versions (and quests with this rule) had a bug: once a command drew to an offscreen
+	// bitmap, every later command in this layer drawn to the screen lost the playing field
+	// offset. Some quests compensate for this by adding the offset themselves.
+	const bool broken_offset = get_er(er_BITMAPOFFSET) || get_qr(qr_BITMAPOFFSETFIX);
+	bool broken_offset_lost = false;
+
 	bool use_target_sprite = layer_uses_sprite(type);
 	for (int i = 0; i < numDrawCommandsToProcess; i++)
 	{
@@ -12053,12 +12072,15 @@ void do_primitives(BITMAP *targetBitmap, int32_t type, int32_t xoff, int32_t yof
 		{
 			bmp = targetBitmap;
 			isTargetOffScreenBmp = false;
+			if (broken_offset_lost)
+				draw_origin = DrawOrigin::Screen;
 		}
 		else
 		{
 			// Render target was set to a internal bitmap (but not the screen bitmap).
 			isTargetOffScreenBmp = true;
 			draw_origin = DrawOrigin::Screen;
+			broken_offset_lost = broken_offset;
 		}
 
 		current_target_bmp = bmp;

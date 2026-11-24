@@ -5,6 +5,7 @@
 #include "core/zdefs.h"
 #include "zc/ffscript.h"
 #include "zc/scripting/script_object.h"
+#include "zc/scripting/zasm_check.h"
 
 extern refInfo *ri;
 extern int32_t sarg1;
@@ -18,9 +19,9 @@ user_stack *checkStack(uint32_t id, bool skipError)
 	return user_stacks.check(id, skipError);
 }
 
-void register_existing_user_stack(user_stack* stack)
+bool register_existing_user_stack(user_stack* stack)
 {
-	user_stacks.register_existing(stack);
+	return user_stacks.register_existing(stack);
 }
 
 std::vector<user_stack*> get_user_stacks()
@@ -60,7 +61,7 @@ int32_t stack_get_register(int32_t reg)
 		}
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -68,5 +69,5 @@ int32_t stack_get_register(int32_t reg)
 
 void stack_set_register([[maybe_unused]] int32_t reg, [[maybe_unused]] int32_t value)
 {
-	NOTREACHED();
+	ZASM_NOTREACHED();
 }

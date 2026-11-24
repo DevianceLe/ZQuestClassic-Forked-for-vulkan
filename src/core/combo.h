@@ -1,5 +1,4 @@
-#ifndef CORE_COMBO_H_
-#define CORE_COMBO_H_
+#pragma once
 
 #include "base/headers.h"
 #include "base/general.h"
@@ -67,7 +66,26 @@ enum
 	CMB_ADVP_SZ
 };
 
+// How trigger summaries name the things that triggers share. The trigger graph finds these
+// names in the summary's lines, to rename them when it folds setups together, so a line about
+// one of them must name it through these. Conditions are the exception: they list several
+// states at once ("Level states [1, 2] enabled"), so the graph doesn't find those there.
+std::string trigger_copycat_name(int id);
+std::string trigger_group_name(int group);
+std::string trigger_exstate_name(int state);
+std::string trigger_exdoor_name(int dir, int index);
+std::string trigger_level_state_name(int state);
+std::string trigger_global_state_name(int state);
+
 struct newcombo;
+struct combo_trigger_summary
+{
+	// When set, the weapon causes and effects are listed on their own, and the other
+	// parts don't include them.
+	bool separate_weapon;
+	std::string weapon_causes, weapon_effects, causes, conditions, effects, fail_effects;
+};
+
 struct combo_trigger
 {
 	string label;
@@ -134,7 +152,11 @@ struct combo_trigger
 	
 	byte large_combo_copycat;
 	
-	std::string summarize(newcombo const& cmb) const;
+	// Each part of summarize(): lines indented by 3 spaces (6 for details of the line
+	// above), with no trailing newline. `cid` is the combo's id, which names the combo a
+	// relative combo change leads to; -1 leaves it out.
+	combo_trigger_summary summarize_parts(newcombo const& cmb, int cid = -1) const;
+	std::string summarize(newcombo const& cmb, int cid = -1) const;
 	bool is_blank() const;
 	void clear();
 	bool operator==(combo_trigger const& other) const = default;
@@ -207,6 +229,9 @@ struct newcombo
 	bool can_cycle() const;
 	bool should_cycle() const;
 	bool using_cs2() const;
+	// Whether '->ComboType Effects' run the Generic combo effects: a Generic combo, or a
+	// Script 1-10 combo with its 'Engine' flag.
+	bool runs_generic_effects() const;
 	
 	void reset_animation();
 	bool animate(bool force_next_frame = false);
@@ -493,6 +518,9 @@ enum ComboTriggerFlag
 	// have with [TRIGFLAG_TRIGGER_LARGE_COMBO_COPYCAT] set, and the same
 	// [combotrigger::LargeComboCopycatID].
 	TRIGFLAG_TRIGGERED_BY_LARGE_COMBO_COPYCAT,
+	// Trigger weapon effect: once a weapon has fired this trigger, that weapon doesn't fire it
+	// again. The combo's other triggers aren't affected.
+	TRIGFLAG_ONCE_PER_WEAPON,
 
 	TRIGFLAG_MAX
 };
@@ -513,5 +541,21 @@ extern std::vector<newcombo> combobuf;
 
 bool is_push_flag(int flag, optional<int> dir = nullopt);
 
-#endif
+// Whether '->ComboType Effects' do something on a combo of this type, other than the Generic
+// combo effects. These are the effects the runtime runs in _do_trigger_combo, and they mark
+// the weapon that triggered them, so it skips the combo afterwards.
+bool combo_type_has_trigger_effects(int type);
+// Whether a combo of this type runs its '->ComboType Effects' whenever a trigger fires, checked or
+// not. A Custom Block kills the triggering weapon (but not a sword or hammer).
+bool alwaysCTypeEffects(int32_t type);
 
+// The weapons that can trigger a combo, with their names in the Combo Trigger Editor and the
+// trigger summaries, in the order both list them.
+extern const std::vector<std::pair<int, const char*>> lweapon_trigger_causes;
+extern const std::vector<std::pair<int, const char*>> eweapon_trigger_causes;
+// Weapons burning with a level of fire, lweapons or eweapons, named as the summaries name them.
+extern const std::vector<std::pair<int, const char*>> burning_trigger_causes;
+
+// The trigger causes that fire every frame for as long as they're true, with their names in
+// the Combo Trigger Editor.
+extern const std::vector<std::pair<int, const char*>> every_frame_trigger_causes;

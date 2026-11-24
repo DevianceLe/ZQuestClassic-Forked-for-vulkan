@@ -3731,6 +3731,14 @@ int32_t onShowTriggerProx()
 	show_trigger_prox=!show_trigger_prox;
 	return D_O_K;
 }
+int32_t onShowTriggerLog()
+{
+	show_trigger_log=!show_trigger_log;
+	// The log goes to the console.
+	if (show_trigger_log && !console_enabled)
+		FFCore.ZScriptConsole(true);
+	return D_O_K;
+}
 int32_t onShowViewportFollow()
 {
 	show_viewport_follow=!show_viewport_follow;
@@ -5444,6 +5452,7 @@ enum
 	MENUID_SHOW_HITBOX,
 	MENUID_SHOW_EFFECT,
 	MENUID_SHOW_TRIGGER_PROX,
+	MENUID_SHOW_TRIGGER_LOG,
 	MENUID_SHOW_VIEWPORT_FOLLOW,
 };
 static NewMenu show_menu
@@ -5466,6 +5475,7 @@ static NewMenu show_menu
 	{ "Hitboxes", onShowHitboxes, MENUID_SHOW_HITBOX },
 	{ "Effects", onShowLayerE, MENUID_SHOW_EFFECT },
 	{ "Trigger Proximity", onShowTriggerProx, MENUID_SHOW_TRIGGER_PROX },
+	{ "Trigger Log", onShowTriggerLog, MENUID_SHOW_TRIGGER_LOG },
 	{ "Viewport Follow", onShowViewportFollow, MENUID_SHOW_VIEWPORT_FOLLOW },
 	{ "Info Opacity", onShowInfoOpacity },
 };
@@ -5849,6 +5859,10 @@ void music_resume()
 bool reload_fonts = false;
 void System()
 {
+	// Only a debugger state change made while this menu is open closes it.
+	if (auto debugger = zscript_debugger_get_if_open())
+		debugger->system_menu_close_requested = false;
+
 	mouse_down = gui_mouse_b();
 	music_pause();
 	pause_all_sfx();
@@ -5949,6 +5963,7 @@ void System()
 			show_menu.select_uid(MENUID_SHOW_HITBOX, show_hitboxes);
 			show_menu.select_uid(MENUID_SHOW_EFFECT, show_effectflags);
 			show_menu.select_uid(MENUID_SHOW_TRIGGER_PROX, show_trigger_prox);
+			show_menu.select_uid(MENUID_SHOW_TRIGGER_LOG, show_trigger_log);
 			show_menu.select_uid(MENUID_SHOW_VIEWPORT_FOLLOW, show_viewport_follow);
 			
 			settings_menu.select_uid(MENUID_SETTINGS_HEARTBEEP, heart_beep);
@@ -6053,7 +6068,7 @@ void System()
 		if(Quit || (GameFlags & GAMEFLAG_TRYQUIT))
 			break;
 		// If the system menu is open, and the debugger state is modified, we want to close the menus.
-		if (debugger && debugger->state != debugger->target_state)
+		if (debugger && debugger->system_menu_close_requested)
 			break;
 	}
 	while(running);
@@ -6418,6 +6433,8 @@ void load_control_state()
 			replay_peek_input();
 		else if (replay_is_replaying() && replay_version_check(8, 11))
 			replay_peek_input();
+		if (replay_is_replaying())
+			replay_apply_input();
 		if (replay_get_version() == 8)
 			update_keys();
 	}

@@ -153,6 +153,9 @@ struct ReplayState
 	bool did_attempt_input_during_replay = false;
 	int frame_count = 0;
 	bool previous_control_state[controls::btnLast] = {};
+	// The button states as of the replay's steps so far. Only copied to raw_control_state by
+	// replay_apply_input - see there.
+	bool control_state[controls::btnLast] = {};
 	char previous_keys[KEY_MAX] = {};
 	std::vector<zc_randgen *> rngs;
 	// Per-rng count of how many times each rng was seeded this frame, indexed by rng
@@ -290,7 +293,7 @@ struct KeyReplayStep : public ReplayStep
     void run()
     {
         if (button_index != -1)
-            raw_control_state[button_index] = type == TypeKeyDown;
+            rs.control_state[button_index] = type == TypeKeyDown;
 
         // Set the key/joystick states, in case zscript queries the state of these things.
         if (button_index != -1 && button_index >= 14)
@@ -839,7 +842,10 @@ static void do_recording_poll()
 
 	for (int i = 0; i < KeyMapReplayStep::NumButtons; i++)
 	{
-		bool state = raw_control_state[i];
+		// When replaying, the steps are the source of truth: raw_control_state lags behind them
+		// until the game next reads input (see replay_apply_input), and the steps written here
+		// must keep their frames.
+		bool state = replay_is_replaying() ? rs.control_state[i] : raw_control_state[i];
 		if (state == rs.previous_control_state[i])
 			continue;
 
@@ -895,8 +901,8 @@ static bool set_version()
 	return true;
 }
 
-// Returns false if the file could not be opened or was malformed in a way that
-// prevents loading. Deeper structural corruption is still caught by CHECK.
+// Returns false if the file could not be opened or is malformed. Replay files can come from
+// anywhere (ex: uploads), so nothing in one may crash the parser.
 static bool load_replay(std::string& buffer, std::map<std::string, std::string>& meta, std::filesystem::path path, bool only_meta = false)
 {
     auto start = std::chrono::steady_clock::now();
@@ -988,6 +994,11 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         return true;
     };
 
+    auto malformed = [&](const char* why) {
+        fprintf(stderr, "malformed replay file (%s): %s\n", why, path.string().c_str());
+        return false;
+    };
+
     std::string_view file_view(buffer);
 
     while (!file_view.empty())
@@ -1007,8 +1018,10 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
             continue;
 
         // First find '\xC2' instead of the 2-byte std::string ANNOTATION_MARKER.
+        // Other characters start with that byte too (ex: '©' in a quest title), so check both.
         auto annotation_pos = line.find('\xC2');
-        if (annotation_pos != std::string_view::npos && annotation_pos + 1 < line.size() && line[annotation_pos + 1] == (char)0xAB)
+        bool has_annotation = annotation_pos != std::string_view::npos && annotation_pos + 1 < line.size() && line[annotation_pos + 1] == (char)0xAB;
+        if (has_annotation)
             line = line.substr(0, annotation_pos);
 
         if (!line.empty() && line.front() == ' ')
@@ -1053,8 +1066,10 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
 
             if (!done_with_initial_meta)
             {
-                CHECK(meta.find(key) == meta.end());
-                CHECK(annotation_pos == std::string_view::npos);
+                if (meta.contains(key))
+                    return malformed("duplicate meta");
+                if (has_annotation)
+                    return malformed("annotation in meta");
                 meta[key] = value;
             }
             else
@@ -1075,7 +1090,7 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         }
         else if (type == TypeQuit)
         {
-            int quit_state;
+            int quit_state = 0;
             consume_int(line, quit_state);
             replay_log.emplace_back(std::in_place_type<QuitReplayStep>, frame, quit_state);
         }
@@ -1088,7 +1103,8 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
             std::string cheat_name;
             consume_string(line, cheat_name);
             cheat = cheat_from_string(cheat_name);
-            CHECK(cheat > Cheat::None && cheat < Cheat::Last);
+            if (!(cheat > Cheat::None && cheat < Cheat::Last))
+                return malformed("unknown cheat");
 
             if (cheat == Cheat::HeroData)
             {
@@ -1107,31 +1123,39 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         }
         else if (type == TypeQR)
         {
-            int qr;
+            int qr = -1;
             int value_int = 0;
 
             consume_int(line, qr);
             consume_int(line, value_int);
 
-            CHECK(qr >= 0 && qr < qr_MAX);
+            if (!(qr >= 0 && qr < qr_MAX))
+                return malformed("unknown qr");
 
             replay_log.emplace_back(std::in_place_type<QRReplayStep>, frame, qr, value_int != 0);
         }
         else if (type == TypeRng)
         {
-            int start_index, end_index, seed;
+            int start_index = 0, end_index = 0, seed = 0;
             consume_int(line, start_index);
             consume_int(line, end_index);
             consume_int(line, seed);
-            CHECK(start_index <= end_index);
+            if (start_index > end_index)
+                return malformed("bad rng range");
             replay_log.emplace_back(std::in_place_type<RngReplayStep>, frame, start_index, end_index, seed);
         }
         else if (type == TypeKeyMap)
         {
-            CHECK(rs.version >= 5);
-            std::array<int, KeyMapReplayStep::NumButtons> keys;
+            if (rs.version < 5)
+                return malformed("key map step before version 5");
+            std::array<int, KeyMapReplayStep::NumButtons> keys{};
             for (int i = 0; i < KeyMapReplayStep::NumButtons; i++)
+            {
                 consume_int(line, keys[i]);
+                // Playback indexes the key state arrays with these.
+                if (keys[i] < 0 || keys[i] >= KEY_MAX)
+                    return malformed("bad key in key map");
+            }
 
             replay_log.emplace_back(std::in_place_type<KeyMapReplayStep>, frame, keys);
             if (!found_key_map)
@@ -1143,10 +1167,8 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         }
         else if (type == TypeKeyUp || type == TypeKeyDown)
         {
-            if (rs.version >= 5)
-            {
-                CHECK(found_key_map);
-            }
+            if (rs.version >= 5 && !found_key_map)
+                return malformed("key step before key map");
 
             if (!line.empty() && line.front() == ' ')
                 line.remove_prefix(1);
@@ -1160,15 +1182,19 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
                 button_index = -1;
                 key_index = KeyReplayStep::find_index_for_key_name(text.substr(2));
                 if (key_index == -1)
+                {
                     fprintf(stderr, "unknown key %.*s\n", (int)text.size() - 2, text.data() + 2);
-                CHECK(key_index != -1);
+                    return malformed("unknown key");
+                }
             }
             else
             {
                 button_index = KeyReplayStep::find_index_for_button_name(text);
                 if (button_index == -1)
+                {
                     fprintf(stderr, "unknown button %.*s\n", (int)text.size(), text.data());
-                CHECK(button_index != -1);
+                    return malformed("unknown button");
+                }
                 key_index = key_map.button_keys[button_index];
             }
 
@@ -1176,7 +1202,7 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         }
         else if (type == TypeMouse)
         {
-            int x, y, z = 0, b = 0;
+            int x = 0, y = 0, z = 0, b = 0;
             consume_int(line, x);
             consume_int(line, y);
             consume_int(line, z);
@@ -1187,7 +1213,7 @@ static bool load_replay(std::string& buffer, std::map<std::string, std::string>&
         }
         else if (type == TypeState)
         {
-            int state_type, value;
+            int state_type = 0, value = 0;
             consume_int(line, state_type);
             consume_int(line, value);
             replay_log.emplace_back(std::in_place_type<StateReplayStep>, frame, (ReplayStateType)state_type, value);
@@ -1360,6 +1386,9 @@ static void save_result(bool stopped = false, bool changed = false)
 		out << fmt::format("unexpected_gfx_segments: {}", segments_to_string(rs.unexpected_gfx_segments)) << '\n';
 	if (rs.has_assert_failed && !rs.unexpected_gfx_segments_limited.empty())
 		out << fmt::format("unexpected_gfx_segments_limited: {}", segments_to_string(rs.unexpected_gfx_segments_limited)) << '\n';
+	// Stopped partway, like by quitting, rather than reaching the end.
+	if (rs.has_aborted)
+		out << "aborted: true\n";
     out << fmt::format("stopped: {}", stopped) << '\n';
 
 	out.close();
@@ -1498,6 +1527,10 @@ static void do_replaying_poll()
         }
         rs.replay_log_current_index += 1;
     }
+
+    // These old replays applied their input right here.
+    if (rs.version < 6)
+        replay_apply_input();
 
     rs.replay_log_current_quit_index = rs.replay_log_current_index;
     rs.replay_log_current_state_index = rs.replay_log_current_index;
@@ -1640,6 +1673,16 @@ std::map<std::string, std::string> replay_load_meta(std::filesystem::path path)
 	load_replay(buffer, meta, path, only_meta);
 	return meta;
 }
+
+#ifdef ZC_FUZZ
+void replay_fuzz_load(std::filesystem::path path)
+{
+	std::string buffer;
+	std::map<std::string, std::string> meta;
+	load_replay(buffer, meta, path);
+	replay_log.clear();
+}
+#endif
 
 static void peek_meta_steps()
 {
@@ -1858,7 +1901,10 @@ void replay_poll()
         handle_session_seam();
         do_replaying_poll();
         if (rs.replay_log_current_index == replay_log.size())
+        {
             replay_stop();
+            return;
+        }
         break;
     case ReplayMode::Assert:
         handle_session_seam();
@@ -1871,7 +1917,10 @@ void replay_poll()
         do_replaying_poll();
         do_recording_poll();
         if (rs.frame_count == get_frame(replay_log.back()))
+        {
             replay_stop();
+            return;
+        }
         break;
     }
 
@@ -2056,6 +2105,20 @@ void replay_peek_input()
     }
 }
 
+// Makes the game see the button states of the replay's steps.
+//
+// When recording, the game only reads the buttons in load_control_state, so until then
+// everything still sees the previous frame's states - even though the frame has advanced. A
+// button change is recorded with the frame it was read on. Playback must update the states at
+// that same point, not as soon as that frame starts: otherwise code that runs in between sees
+// a press too early. For example, walking through a dungeon door ends by marking every held
+// button as "already pressed", which swallowed a press that the recording had acted on.
+void replay_apply_input()
+{
+    for (int i = 0; i < KeyMapReplayStep::NumButtons; i++)
+        raw_control_state[i] = rs.control_state[i];
+}
+
 void replay_do_cheats()
 {
     size_t i = rs.replay_log_current_index;
@@ -2113,7 +2176,7 @@ void replay_forget_input()
         key_current_frame[i] = 0;
     }
     for (int i = 0; i < KeyMapReplayStep::NumButtons; i++)
-        rs.previous_control_state[i] = raw_control_state[i] = false;
+        rs.previous_control_state[i] = rs.control_state[i] = raw_control_state[i] = false;
     for (int i = 0; i < KEY_MAX; i++)
         rs.previous_keys[i] = false;
 }
@@ -2152,12 +2215,16 @@ void replay_stop(bool aborted)
 			rs.mode = ReplayMode::Off;
 			zc_exit(rs.has_assert_failed ? ASSERT_FAILED_EXIT_CODE : 0);
         }
-        else if (rs.has_assert_failed && !batch_when_done)
+        // Stopping at a requested frame has its own message, and didn't check the whole replay.
+        else if (!batch_when_done && !is_headless() && (rs.has_assert_failed || rs.frame_arg == -1))
         {
             enter_sys_pal();
-            InfoDialog("Assert", "Replay has stopped, and the assert failed.").show();
+            InfoDialog("Assert", rs.has_assert_failed ? "Replay has stopped, and the assert failed." :
+                "Replay has stopped, and the assert passed: the quest still plays the same as when"
+                " it was recorded.").show();
             exit_sys_pal();
-			Paused = true;
+            if (rs.has_assert_failed)
+                Paused = true;
         }
     }
 
@@ -2234,7 +2301,8 @@ void replay_stop(bool aborted)
     rs.replay_file_buffer.clear();
     rs.string_arena.clear();
 
-	if (exit_when_done)
+	// Someone who stops the replay from the player's window gets to keep playing.
+	if (exit_when_done && !(aborted && !is_headless()))
 	{
 		zc_exit(rs.has_rng_desynced ? 1 : 0);
 	}
@@ -2662,6 +2730,11 @@ bool replay_is_recording()
 void replay_enable_exit_when_done()
 {
 	exit_when_done = true;
+}
+
+bool replay_is_exit_when_done()
+{
+	return exit_when_done;
 }
 
 void replay_enable_batch_when_done()

@@ -1,5 +1,4 @@
-#ifndef ZASM_UTILS_H_
-#define ZASM_UTILS_H_
+#pragma once
 
 #include "core/qst.h"
 #include "core/zdefs.h"
@@ -27,7 +26,7 @@ struct CommandMetadata
 };
 
 void zasm_init_meta_cache();
-const std::vector<CommandMetadata>& zasm_get_command_meta_cache();
+const CommandMetadata& zasm_get_command_meta(int command);
 const std::vector<uint8_t>& zasm_get_register_dependency_mask_cache();
 
 struct ZasmFunction
@@ -71,7 +70,7 @@ struct StructuredZasm
 		CALLING_MODE_CALLFUNC_RETURNFUNC,
 	} calling_mode;
 
-	bool is_modern_function_calling();
+	bool is_modern_function_calling() const;
 };
 
 struct ZasmCFG
@@ -189,5 +188,3 @@ void zasm_for_every_script(bool parallel, std::function<void(zasm_script*)> zasm
 uint64_t zasm_scripts_hash();
 
 std::pair<bool, bool> get_command_rw(int command, int arg);
-
-#endif

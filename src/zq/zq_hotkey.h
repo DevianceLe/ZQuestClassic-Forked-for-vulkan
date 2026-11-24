@@ -1,5 +1,4 @@
-#ifndef ZQ_HOTKEY_H_
-#define ZQ_HOTKEY_H_
+#pragma once
 
 #include "allegro/gui.h"
 #include "base/general.h"
@@ -192,6 +191,7 @@ enum
 	
 	ZQKEY_SCREEN_NOTES,
 	ZQKEY_BROWSE_SCREEN_NOTES,
+	ZQKEY_SCREEN_TRIGGERS,
 	
 	ZQKEY_SAVE_MENUS,
 
@@ -224,6 +224,3 @@ void disable_hotkey(uint hkey, bool dis);
 bool disabled_hotkey(uint hkey);
 
 bool selected_hotkey(uint hkey);
-
-#endif
-

@@ -101,6 +101,21 @@ static bool edited = false;
 #if DEVLEVEL > 0
 static int32_t force_wizard = 0;
 #endif
+// The trigger call_combo_editor_triggers() opens once the dialog is up, or -1.
+static int32_t open_trigger = -1;
+
+bool call_combo_editor_triggers(int32_t index, int32_t trigger)
+{
+	// Opens on the "Triggers" tab, without making it the tab the next combo edit opens on.
+	size_t old_tab = cmb_tabs[0];
+	cmb_tabs[0] = 2;
+	open_trigger = trigger;
+	bool ret = call_combo_editor(index);
+	open_trigger = -1;
+	cmb_tabs[0] = old_tab;
+	return ret;
+}
+
 bool call_combo_editor(int32_t index)
 {
 	combo_use_script_data = zc_get_config("zquest","show_comboscript_meta_attribs",1)?true:false;
@@ -179,7 +194,21 @@ ComboEditorDialog::ComboEditorDialog(newcombo const& ref, int32_t index):
 
 ComboEditorDialog::ComboEditorDialog(int32_t index):
 	ComboEditorDialog(combobuf[index], index)
-{}
+{
+	if (open_trigger >= 0 && size_t(open_trigger) < local_comboref.triggers.size())
+		trigger_index = open_trigger;
+}
+
+void ComboEditorDialog::post_realize()
+{
+	if (open_trigger < 0 || size_t(open_trigger) >= local_comboref.triggers.size())
+		return;
+	size_t trigger = open_trigger;
+	// Only once: editing the trigger rebuilds this dialog.
+	open_trigger = -1;
+	if (call_trigger_editor(*this, trigger))
+		refresh_dlg();
+}
 
 //{ Help Strings
 static const char *combotype_help_string[cMAX] =
@@ -2363,10 +2392,15 @@ void ComboEditorDialog::add_combo_trigger(size_t pos, bool copied)
 	
 	if(copied)
 		trig = *from_clipboard;
-	else if(!call_trigger_editor(*this, pos))
+	else
 	{
-		local_comboref.triggers.erase(std::next(local_comboref.triggers.begin(), pos));
-		return;
+		// Weapons usually should trigger a combo once, not every frame they touch it.
+		trig.trigger_flags.set(TRIGFLAG_ONCE_PER_WEAPON, true);
+		if(!call_trigger_editor(*this, pos))
+		{
+			local_comboref.triggers.erase(std::next(local_comboref.triggers.begin(), pos));
+			return;
+		}
 	}
 	trigger_index = pos;
 	refresh_dlg();
@@ -2764,7 +2798,7 @@ std::shared_ptr<GUI::Widget> ComboEditorDialog::view()
 												if (first)
 													first = false;
 												else oss << "\n\n";
-												oss << trig.summarize(local_comboref);
+												oss << trig.summarize(local_comboref, index);
 											}
 											InfoDialog("All Trigger Summary", oss.str()).set_text_align(0).show();
 										}),
@@ -2777,7 +2811,7 @@ std::shared_ptr<GUI::Widget> ComboEditorDialog::view()
 											string title = fmt::format("Trigger Summary ({:03})", trigger_index);
 											if (!trig.label.empty())
 												title += fmt::format(" '{}'", trig.label);
-											InfoDialog(title, trig.summarize(local_comboref)).set_text_align(0).show();
+											InfoDialog(title, trig.summarize(local_comboref, index)).set_text_align(0).show();
 										})
 								),
 								triggerList = List(
@@ -2914,10 +2948,15 @@ std::shared_ptr<GUI::Widget> ComboEditorDialog::view()
 												string title = "Trigger Summary (Clipboard)";
 												if (!from_clipboard->label.empty())
 													title += fmt::format(" '{}'", from_clipboard->label);
-												InfoDialog(title, from_clipboard->summarize(local_comboref)).set_text_align(0).show();
+												InfoDialog(title, from_clipboard->summarize(local_comboref, index)).set_text_align(0).show();
 											}
 										})
-								)
+								),
+								Button(text = "Combo Triggers Guide",
+									onPressFunc = []()
+									{
+										util::open_web_link("https://docs.zquestclassic.com/tutorials/combo_triggers");
+									})
 							)
 						)
 					)

@@ -75,7 +75,7 @@ set(WANT_ZUPDATER TRUE CACHE BOOL "Build the zupdater target")
 set(WANT_SENTRY FALSE CACHE BOOL "Include Sentry for crash dump handling")
 set(WANT_WEBSOCKETS TRUE CACHE BOOL "Support websockets in zscript")
 set(WANT_NFD TRUE CACHE BOOL "Include nativefiledialog")
-set(WANT_FUZZ FALSE CACHE BOOL "Set FUZZ CXX definition")
+set(WANT_FUZZ FALSE CACHE BOOL "Build zplayer with libFuzzer targets (ZC_FUZZ=<target> zplayer). Needs clang; see docs/fuzzing.md")
 set(WANT_GIT_HOOKS TRUE CACHE BOOL "Install git hooks")
 set(WANT_ZC_TESTS TRUE CACHE BOOL "Build tests")
 set(WANT_VENDORED_ZLIB TRUE CACHE BOOL "Build the vendored library at third_party/zlib")
@@ -128,6 +128,27 @@ else()
 	set(CMAKE_CXX_FLAGS_ASAN "-O1 -g -fsanitize=address,bool -fno-sanitize-recover=bool -fno-omit-frame-pointer" CACHE STRING "" FORCE)
 	set(CMAKE_C_FLAGS_ASAN "-O1 -g -fsanitize=address,bool -fno-sanitize-recover=bool -fno-omit-frame-pointer" CACHE STRING "" FORCE)
 	set(CMAKE_EXE_LINKER_FLAGS_ASAN "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address,bool" CACHE STRING "" FORCE)
+endif()
+
+if(WANT_FUZZ)
+	if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR MSVC)
+		message(FATAL_ERROR "WANT_FUZZ needs clang (with libFuzzer, e.g. Homebrew llvm on macOS)")
+	endif()
+	# Coverage instrumentation for everything built from here on, vendored libraries
+	# included, so the fuzzer can see into the music decoders too. zplayer links libFuzzer's
+	# no-main runtime and enters it when the ZC_FUZZ env var names a target (src/zc/fuzz.cpp).
+	add_compile_options(-fsanitize=fuzzer-no-link)
+	add_link_options(-fsanitize=fuzzer-no-link)
+	execute_process(
+		COMMAND ${CMAKE_CXX_COMPILER} -print-resource-dir
+		OUTPUT_VARIABLE CLANG_RESOURCE_DIR
+		OUTPUT_STRIP_TRAILING_WHITESPACE)
+	file(GLOB_RECURSE LIBFUZZER_NO_MAIN "${CLANG_RESOURCE_DIR}/lib/*fuzzer_no_main*.a")
+	if(NOT LIBFUZZER_NO_MAIN)
+		message(FATAL_ERROR "Could not find libFuzzer's no-main runtime under ${CLANG_RESOURCE_DIR}")
+	endif()
+	list(GET LIBFUZZER_NO_MAIN 0 LIBFUZZER_NO_MAIN)
+	message(STATUS "libFuzzer: ${LIBFUZZER_NO_MAIN}")
 endif()
 
 if(WANT_GIT_HOOKS)
@@ -192,6 +213,16 @@ if(LINUX)
 		# install-time RPATH rewrite changes the executables' bytes - so
 		# Linux crash reports never matched the uploaded debug info.
 		add_link_options("-Wl,--build-id=sha1")
+
+		# Stack canaries and checked libc string functions, which upstream
+		# clang (unlike distro compilers, Apple clang and MSVC) leaves off.
+		# They turn an overflow of a fixed size buffer - say, a quest string
+		# longer than a log buffer - into a clean abort instead of a write
+		# over the return address. _FORTIFY_SOURCE needs optimization, so it
+		# is only set for optimized builds (and not Asan, which has its own
+		# checked versions of these functions).
+		add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fstack-protector-strong>")
+		add_compile_options("$<$<AND:$<CONFIG:Release,RelWithDebInfo,MinSizeRel>,$<COMPILE_LANGUAGE:C,CXX>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=2>")
 	endif()
 endif()
 
@@ -419,7 +450,7 @@ endif()
 FetchContent_Declare(
   allegro5
   GIT_REPOSITORY https://github.com/connorjclark/allegro5.git
-  GIT_TAG        c5409b301906150d231709407bb8de2e3c12f732
+  GIT_TAG        1d6f369ca6d1fbbe6aee43c7d73bd0a552539211
   EXCLUDE_FROM_ALL
 )
 if(EMSCRIPTEN)
@@ -863,6 +894,7 @@ set(core_sources
 	src/core/qst_tiles.cpp
 	src/core/qst_weapons.cpp
 	src/core/qst.cpp
+	src/core/trigger_graph.cpp
 	src/core/weapon_data.cpp
 	src/core/zdefs.cpp
 )
@@ -1532,6 +1564,7 @@ if(WANT_FUZZ)
 	foreach(target IN LISTS zc_targets)
 		target_compile_definitions(${target} PRIVATE ZC_FUZZ)
 	endforeach()
+	target_link_libraries(zplayer PRIVATE ${LIBFUZZER_NO_MAIN})
 endif()
 
 if (WIN32)
@@ -1662,7 +1695,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
 	set_target_properties(run_replay_tests_all run_replay_tests_basic run_replay_tests_all_1s run_replay_tests_all_10s run_replay_tests_all_100s PROPERTIES FOLDER "Replay Tests")
 	set_target_properties(base core zalleg zcgui PROPERTIES FOLDER "Our Libraries")
 	set_target_properties(scc worker_pool zcsound zasm zcsound PROPERTIES FOLDER "Components")
-	set_target_properties(gme PROPERTIES FOLDER Sound)
+	get_target_property(gme_target gme::gme ALIASED_TARGET)
+	set_target_properties(${gme_target} PROPERTIES FOLDER Sound)
 	set_target_properties(allegro allegro_audio allegro_acodec allegro_image allegro_font allegro_memfile allegro_main allegro_primitives allegro_dialog allegro-legacy al5img algif alpng PROPERTIES FOLDER Allegro)
 	set_target_properties(zconsole zconsolelogger PROPERTIES FOLDER ZConsole)
 	if(WANT_SENTRY)

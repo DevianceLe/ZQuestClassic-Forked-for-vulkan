@@ -8,6 +8,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   PYTHONUNBUFFERED: '1'
   CCACHE_BASEDIR: ${{ github.workspace }}
@@ -22,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: git clone
-        uses: connorjclark/action-cached-lfs-checkout@3ea4dc59b06f3baa8c01ba891fbfc2dbfdce5bc8
+        uses: connorjclark/action-cached-lfs-checkout@f082d118c76ebb8e100c35719e76b86866146f9d
         with:
           enableCrossOsArchive: true
 
@@ -76,9 +79,7 @@ jobs:
             # See "TODO: GCC w/ these flags" in CMakeLists.txt
             extra-args: --filter playground --frame=keys.zplay=20
       fail-fast: false
-    # See https://github.com/community/community/discussions/40777
-    # uses: ./.github/workflows/test.yml
-    uses: ZQuestClassic/ZQuestClassic/.github/workflows/test.yml@main
+    uses: ./.github/workflows/test.yml
     with:
       runs-on: ${{ matrix.runs-on }}
       arch: ${{ matrix.arch }}
@@ -113,12 +114,12 @@ jobs:
           df -h /
 
       - name: Install cmake
-        uses: jwlawson/actions-setup-cmake@v2
+        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2.2.0
         with:
           cmake-version: '3.31.6'
 
       - name: git clone
-        uses: connorjclark/action-cached-lfs-checkout@3ea4dc59b06f3baa8c01ba891fbfc2dbfdce5bc8
+        uses: connorjclark/action-cached-lfs-checkout@f082d118c76ebb8e100c35719e76b86866146f9d
         with:
           enableCrossOsArchive: true
       # The version header comes from `git describe`, which needs the history and
@@ -147,7 +148,7 @@ jobs:
           echo "EMSDK_NODE=$EMSDK_NODE" >> $GITHUB_ENV
 
       - name: Install Node.js 22.x
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v7
         with:
           node-version: 22.x
 
@@ -170,7 +171,7 @@ jobs:
       # caches (the repo's cache storage is capped).
       - name: ccache cache files
         id: ccache-restore
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: .ccache
           key: web-ccache-v2-${{ github.run_id }}
@@ -205,7 +206,7 @@ jobs:
       - run: ccache -s
       - name: Save ccache
         if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/releases/')
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: .ccache
           key: ${{ steps.ccache-restore.outputs.cache-primary-key }}
@@ -218,7 +219,7 @@ jobs:
         working-directory: web
         env:
           BUILD_FOLDER: ../build_emscripten/RelWithDebInfo
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip

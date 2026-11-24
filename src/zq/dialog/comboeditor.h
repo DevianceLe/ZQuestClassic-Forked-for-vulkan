@@ -1,5 +1,4 @@
-#ifndef ZC_DIALOG_COMBOEDITOR_H_
-#define ZC_DIALOG_COMBOEDITOR_H_
+#pragma once
 
 #include "gui/dialog.h"
 #include "gui/button.h"
@@ -20,6 +19,9 @@
 
 class ComboWizardDialog;
 bool call_combo_editor(int32_t index);
+// Opens the combo editor on its Triggers tab, and opens trigger `trigger` (if not -1) in the
+// Combo Trigger Editor right away.
+bool call_combo_editor_triggers(int32_t index, int32_t trigger);
 
 std::string getComboTypeHelpText(int32_t id);
 std::string getMapFlagHelpText(int32_t id);
@@ -34,6 +36,7 @@ public:
 	
 
 	std::shared_ptr<GUI::Widget> view() override;
+	void post_realize() override;
 	bool handleMessage(const GUI::DialogMessage<message>& msg);
 
 private:
@@ -90,5 +93,3 @@ private:
 	friend class ComboWizardDialog;
 	friend class ComboTriggerDialog;
 };
-
-#endif

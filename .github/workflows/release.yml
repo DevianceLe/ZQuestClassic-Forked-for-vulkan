@@ -17,6 +17,9 @@ on:
         type: string
         description: "Version Override: (! USE VERSION TYPE INSTEAD !) Only use this to publish a specific version, or republish an existing one. For emergency use only."
 
+permissions:
+  contents: read
+
 jobs:
   create-tag:
     runs-on: ubuntu-latest
@@ -29,16 +32,19 @@ jobs:
         run: exit 1
       # Only commit history is needed (for `git describe`), so skip the blobs.
       - name: git clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           filter: blob:none
       - id: make-vars
+        env:
+          VERSION_TYPE: ${{ github.event.inputs.version-type }}
+          VERSION_OVERRIDE: ${{ github.event.inputs.version-override }}
         run: |
           python3 .github/workflows/print-release-name-vars.py \
             --github-org=${{ github.repository_owner }} \
-            --version-type=${{ github.event.inputs.version-type }} \
-            --version-override=${{ github.event.inputs.version-override }}
+            --version-type="$VERSION_TYPE" \
+            --version-override="$VERSION_OVERRIDE"
 
       - name: Setup Sentry CLI
         uses: mathieu-bour/setup-sentry-cli@ff4fff773f5e628fa214ebd19e46fb7289454ee2 # v3.0.0
@@ -83,9 +89,7 @@ jobs:
             compiler: clang
             config: RelWithDebInfo
       fail-fast: false
-    # See https://github.com/community/community/discussions/40777
-    # uses: ./.github/workflows/build.yml
-    uses: ZQuestClassic/ZQuestClassic/.github/workflows/build.yml@main
+    uses: ./.github/workflows/build.yml
     with:
       runs-on: ${{ matrix.runs-on }}
       arch: ${{ matrix.arch }}
@@ -103,20 +107,23 @@ jobs:
       - build-release
     if: ${{ always() }}
     runs-on: ubuntu-22.04
+    # Creates the release and its tag.
+    permissions:
+      contents: write
     steps:
       - name: git clone
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           filter: blob:none
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12.8'
           cache: pip
       - run: pip install -r requirements.txt
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           path: release-packages
 
@@ -124,7 +131,7 @@ jobs:
         run: python scripts/generate_changelog.py --format markdown --from ${{ needs.create-tag.outputs.previous-release-version }} --to ${{ needs.create-tag.outputs.release-version }} --to-ref ${{ github.sha }} --for-nightly=${{ github.event.inputs.version-type == 'nightly' }} > new_changelog.md
 
       - name: Release
-        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           name: ${{ needs.create-tag.outputs.release-name }}
           tag_name: ${{ needs.create-tag.outputs.release-version }}
@@ -135,7 +142,7 @@ jobs:
           generate_release_notes: false
           body_path: new_changelog.md
 
-      - uses: actions/github-script@v6
+      - uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.WEBSITE_REPO_TOKEN }}
           script: |
@@ -159,7 +166,7 @@ jobs:
           sentry-cli --log-level=DEBUG releases finalize 'zelda-classic@${{ needs.create-tag.outputs.release-version }}'
 
       - name: Setup s3cmd
-        uses: s3-actions/s3cmd@4e3a53c3e9313f573ff3f69aec7a772366f2f8f5
+        uses: s3-actions/s3cmd@f6b9af96d329795d7ba6199c21ef84bf1211c940
         with:
           provider: digitalocean
           region: nyc3

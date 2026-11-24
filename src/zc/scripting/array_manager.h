@@ -1,5 +1,4 @@
-#ifndef ZC_SCRIPTING_ARRAY_MANAGER_H_
-#define ZC_SCRIPTING_ARRAY_MANAGER_H_
+#pragma once
 
 #include "base/general.h"
 #include "base/zc_array.h"
@@ -28,6 +27,9 @@ class ArrayManager
 public:
 	ArrayManager(int32_t ptr, bool neg);
 	ArrayManager(int32_t ptr);
+	~ArrayManager();
+	ArrayManager(const ArrayManager&) = delete;
+	ArrayManager& operator=(const ArrayManager&) = delete;
 	
 	int32_t get(int32_t indx) const;
 	void set(int32_t indx, int32_t val, script_object_type is_object = script_object_type::none);
@@ -52,11 +54,14 @@ public:
 	
 	bool negAccess;
 private:
+	// Called before releasing elements: one of those may hold the last reference to the array
+	// itself (or its destructor may drop it), and the array must outlive this.
+	void pin_array();
+
 	ZScriptArray* aptr;
 	struct script_array* script_array_object;
 	int32_t legacy_internal_id;
 	script_array::internal_array_id internal_array_id;
 	bool _invalid;
+	struct script_array* pinned_array = nullptr;
 };
-
-#endif

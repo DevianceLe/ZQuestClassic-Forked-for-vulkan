@@ -1,7 +1,7 @@
-#ifndef ZC_PROCESS_MANAGEMENT_H_
-#define ZC_PROCESS_MANAGEMENT_H_
+#pragma once
 
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <stdint.h>
 #include <vector>
@@ -87,6 +87,8 @@ struct process_killer
 	// How the process ended (ex: "exited with code 1", "was killed by signal 11 (Segmentation
 	// fault: 11)"), waiting briefly for it to end if it hasn't yet.
 	std::string describe_exit() const;
+	// The process's exit code, if it has exited normally (not crashed, killed, or never started).
+	std::optional<int32_t> exit_code() const;
 private:
 	#ifndef _WIN32
 	// Set once the process has been waited on, after which the pid may belong to another process.
@@ -199,6 +201,3 @@ process_manager* launch_piped_process(std::string file, std::string pipename, co
 void launch_file(std::string const& file);
 bool run_and_get_output(std::string file, const std::vector<std::string>& args, std::string& output);
 std::map<std::string, std::string> parse_output_map(std::string output);
-
-#endif
-

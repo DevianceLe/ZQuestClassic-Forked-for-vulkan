@@ -1,5 +1,4 @@
-#ifndef ZASM_DEBUG_DATA_H_
-#define ZASM_DEBUG_DATA_H_
+#pragma once
 
 #include <array>
 #include <optional>
@@ -128,6 +127,10 @@ struct DebugType
 	bool isVoid(const DebugData& debug_data) const;
 	bool isUntyped(const DebugData& debug_data) const;
 	bool isFixed(const DebugData& debug_data) const;
+	// Whether values are plain integers: a long, or an enum declared @Bitflags("long"). Values of
+	// every other type - ints, bools, other enums, untyped - are fixed-point numbers (in units of
+	// 1/10000). Matches the compiler's notion of a long (DataType::isLong).
+	bool isLongValued(const DebugData& debug_data) const;
 	bool isLong(const DebugData& debug_data) const;
 	bool isBool(const DebugData& debug_data) const;
 	bool isEnum(const DebugData& debug_data) const;
@@ -241,5 +244,3 @@ private:
 	mutable std::vector<std::vector<int32_t>> scope_children_cache;
 	mutable bool scope_children_cache_built = false;
 };
-
-#endif

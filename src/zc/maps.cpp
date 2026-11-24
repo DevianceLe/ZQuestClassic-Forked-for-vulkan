@@ -37,6 +37,7 @@ using std::set;
 #include "zc/ffscript.h"
 #include "drawing.h"
 #include "zc/combos.h"
+#include "zc/combo_trigger_log.h"
 #include "zc/replay.h"
 #include "slopes.h"
 #include "particles.h"
@@ -1249,6 +1250,10 @@ int32_t COMBOPOS(int32_t x, int32_t y)
 	DCHECK(x >= 0 && x < 256 && y >= 0 && y < 176);
 	return (y & 0xF0) + (x >> 4);
 }
+int32_t COMBOPOS_IN_SCREEN(int32_t x, int32_t y)
+{
+	return COMBOPOS(x % 256, y % 176);
+}
 int32_t COMBOPOS_B(int32_t x, int32_t y)
 {
 	if(unsigned(x) >= 256 || unsigned(y) >= 176)
@@ -1268,7 +1273,7 @@ rpos_t COMBOPOS_REGION(const region_t& region, int32_t x, int32_t y)
 {
 	int scr_dx = x / (16*16);
 	int scr_dy = y / (11*16);
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	return static_cast<rpos_t>((scr_dx + scr_dy * region.screen_width)*176 + pos);
 }
 rpos_t COMBOPOS_REGION(int32_t x, int32_t y)
@@ -1425,7 +1430,7 @@ int32_t MAPCOMBO(int32_t x, int32_t y)
 {
 	if (!is_in_world_bounds(x, y))
 		return 0;
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	mapscr* scr = get_scr_for_world_xy(x, y);
 	return scr->data[pos];
 }
@@ -1441,7 +1446,7 @@ int32_t MAPCOMBOL(int32_t layer,int32_t x,int32_t y)
 	if (!m->is_valid())
 		return 0;
 
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	return m->data[pos];
 }
 
@@ -1455,7 +1460,7 @@ int32_t MAPCSETL(int32_t layer,int32_t x,int32_t y)
     if (!m->is_valid())
 		return 0;
 
-    int pos = COMBOPOS(x%256, y%176);
+    int pos = COMBOPOS_IN_SCREEN(x, y);
     return m->cset[pos];
 }
 
@@ -1469,7 +1474,7 @@ int32_t MAPFLAGL(int32_t layer,int32_t x,int32_t y)
     if (!m->is_valid())
 		return 0;
 
-    int pos = COMBOPOS(x%256, y%176);
+    int pos = COMBOPOS_IN_SCREEN(x, y);
     return m->sflag[pos];
 }
 
@@ -1483,7 +1488,7 @@ int32_t COMBOTYPEL(int32_t layer,int32_t x,int32_t y)
     if (!m->is_valid())
 		return 0;
 
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
     return combobuf[m->data[pos]].type;
 }
 
@@ -1497,7 +1502,7 @@ int32_t MAPCOMBOFLAGL(int32_t layer,int32_t x,int32_t y)
     if (!m->is_valid())
 		return 0;
 
-    int pos = COMBOPOS(x%256, y%176);
+    int pos = COMBOPOS_IN_SCREEN(x, y);
     return combobuf[m->data[pos]].flag;
 }
 
@@ -1535,7 +1540,7 @@ int32_t MAPCSET(int32_t x, int32_t y)
 	if (!is_in_world_bounds(x, y))
 		return 0;
 	mapscr* scr = get_scr_for_world_xy(x, y);
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	return scr->cset[pos];
 }
 
@@ -1544,7 +1549,7 @@ int32_t MAPFLAG(int32_t x, int32_t y)
 	if (!is_in_world_bounds(x, y))
 		return 0;
 	mapscr* scr = get_scr_for_world_xy(x, y);
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	return scr->sflag[pos];
 }
 
@@ -1612,7 +1617,7 @@ int32_t MAPCOMBOFLAG(int32_t x,int32_t y)
 		return 0;
 
 	mapscr* scr = get_scr_for_world_xy(x, y);
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	return combobuf[scr->data[pos]].flag;
 }
 
@@ -1666,7 +1671,7 @@ static void _handle_screen_load_trigger(const combined_handle_t& handle)
 		done = true; // don't loop again unless something changes
 		TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.get(TRIGFLAG_SCREENLOAD);
-		}).execute(handle);
+		}).set_cause("On screen load").execute(handle);
 		if(handle.data() != cid)
 		{
 			cid = handle.data();
@@ -1708,7 +1713,7 @@ static void _handle_screen_unload_trigger(const combined_handle_t& handle)
 		done = true; // don't loop again unless something changes
 		TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.get(TRIGFLAG_SCREENUNLOAD);
-		}).execute(handle);
+		}).set_cause("On screen unload").execute(handle);
 		if(handle.data() != cid)
 		{
 			cid = handle.data();
@@ -2071,6 +2076,34 @@ static void log_state_change(int map, int screen, std::string action)
 		Z_eventlog("[Map %d, Screen %02X] %s\n", map + 1, screen, action.c_str());
 }
 
+// Calls fn(map, screen) (map counting from 0) for each screen the carryover chain from the given
+// screen reaches, in order. The chain stops at a screen it has already visited, a map that doesn't
+// exist, or a special screen.
+template <typename Fn>
+static void for_each_carryover_screen(int map, int screen, Fn fn)
+{
+	// nextmap counts from 1, and 0 ends the chain.
+	int nmap = TheMaps[map*MAPSCRS + screen].nextmap;
+	int nscr = TheMaps[map*MAPSCRS + screen].nextscr;
+
+	std::vector<int32_t> done;
+	bool looped = (nmap == map+1 && nscr == screen);
+
+	while (nmap != 0 && nmap <= map_count && !looped && nscr < 128)
+	{
+		fn(nmap - 1, nscr);
+
+		int cmap = nmap - 1;
+		int cscr = nscr;
+		nmap = TheMaps[cmap*MAPSCRS + cscr].nextmap;
+		nscr = TheMaps[cmap*MAPSCRS + cscr].nextscr;
+
+		int32_t id = ((nmap-1)<<7) + nscr;
+		looped = std::find(done.begin(), done.end(), id) != done.end();
+		done.push_back(id);
+	}
+}
+
 void setmapflag_mi(mapscr* scr, int32_t mi, uint32_t flag)
 {
     byte cscr = mi&((1<<7)-1);
@@ -2088,41 +2121,21 @@ void setmapflag_mi(mapscr* scr, int32_t mi, uint32_t flag)
                
     if((scr->nocarry&flag)!=flag)
     {
-        byte nmap=TheMaps[((cmap)*MAPSCRS)+cscr].nextmap;
-        byte nscr=TheMaps[((cmap)*MAPSCRS)+cscr].nextscr;
-        
-        std::vector<int32_t> done;
-        bool looped = (nmap==cmap+1 && nscr==cscr);
-        
-        while((nmap!=0) && !looped && !(nscr>=128))
-        {
-            if(!(game->maps.get(((nmap-1)<<7)+nscr) & flag))
+        for_each_carryover_screen(cmap, cscr, [&](int map, int screen) {
+            if(!(game->maps.get(mapind(map, screen)) & flag))
             {
-                log_state_change(nmap, nscr, "State change carried over");
+                log_state_change(map, screen, "State change carried over");
                 if (replay_is_active())
-                    replay_step_comment(fmt::format("map {} scr {} flag {} carry", nmap, nscr, replay_state_string));
-                if (nmap - 1 == cur_map && is_in_current_region(nscr))
+                    replay_step_comment(fmt::format("map {} scr {} flag {} carry", map + 1, screen, replay_state_string));
+                if (map == cur_map && is_in_current_region(screen))
                 {
-                    auto screen_handles = create_screen_handles_one(get_scr(nscr));
+                    auto screen_handles = create_screen_handles_one(get_scr(screen));
                     bool do_layers = true;
                     apply_screen_state_remove_combos(screen_handles, flag, do_layers);
                 }
-                game->maps[((nmap-1)<<7)+nscr] |= flag;
+                game->maps[mapind(map, screen)] |= flag;
             }
-            
-            cmap=nmap;
-            cscr=nscr;
-            nmap=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextmap;
-            nscr=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextscr;
-            
-            for(auto it = done.begin(); it != done.end(); it++)
-            {
-                if(*it == ((nmap-1)<<7)+nscr)
-                    looped = true;
-            }
-            
-            done.push_back(((nmap-1)<<7)+nscr);
-        }
+        });
     }
 }
 
@@ -2170,33 +2183,13 @@ void unsetmapflag_mi(mapscr* scr, int32_t mi, uint32_t flag, bool anyflag)
                
     if((scr->nocarry&flag)!=flag)
     {
-        byte nmap=TheMaps[((cmap)*MAPSCRS)+cscr].nextmap;
-        byte nscr=TheMaps[((cmap)*MAPSCRS)+cscr].nextscr;
-        
-        std::vector<int32_t> done;
-        bool looped = (nmap==cmap+1 && nscr==cscr);
-        
-        while((nmap!=0) && !looped && !(nscr>=128))
-        {
-            if(game->maps.get(((nmap-1)<<7)+nscr) & flag)
+        for_each_carryover_screen(cmap, cscr, [&](int map, int screen) {
+            if(game->maps.get(mapind(map, screen)) & flag)
             {
-                log_state_change(nmap, nscr, "State change carried over");
-                game->maps[((nmap-1)<<7)+nscr] &= ~flag;
+                log_state_change(map, screen, "State change carried over");
+                game->maps[mapind(map, screen)] &= ~flag;
             }
-            
-            cmap=nmap;
-            cscr=nscr;
-            nmap=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextmap;
-            nscr=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextscr;
-            
-            for(std::vector<int32_t>::iterator it = done.begin(); it != done.end(); it++)
-            {
-                if(*it == ((nmap-1)<<7)+nscr)
-                    looped = true;
-            }
-            
-            done.push_back(((nmap-1)<<7)+nscr);
-        }
+        });
     }
 }
 
@@ -2233,35 +2226,15 @@ void setxmapflag_mi(int32_t mi, uint32_t flag)
 	
 	if((scr->exstate_carry&flag)==flag)
 	{
-		byte nmap=TheMaps[((cmap)*MAPSCRS)+cscr].nextmap;
-		byte nscr=TheMaps[((cmap)*MAPSCRS)+cscr].nextscr;
-		
-		std::vector<int32_t> done;
-		bool looped = (nmap==cmap+1 && nscr==cscr);
-		
-		while((nmap!=0) && !looped && !(nscr>=128))
-		{
-			if(!(game->xstates.get(((nmap-1)<<7)+nscr) & flag))
+		for_each_carryover_screen(cmap, cscr, [&](int map, int screen) {
+			if(!(game->xstates.get(mapind(map, screen)) & flag))
 			{
-				log_state_change(nmap, nscr, "ExState change carried over");
+				log_state_change(map, screen, "ExState change carried over");
 				if (replay_is_active())
-					replay_step_comment(fmt::format("map {} scr {} exstate {} carry", nmap, nscr, temp));
-				game->xstates[((nmap-1)<<7)+nscr] |= flag;
+					replay_step_comment(fmt::format("map {} scr {} exstate {} carry", map + 1, screen, temp));
+				game->xstates[mapind(map, screen)] |= flag;
 			}
-			
-			cmap=nmap;
-			cscr=nscr;
-			nmap=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextmap;
-			nscr=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextscr;
-			
-			for(auto it = done.begin(); it != done.end(); it++)
-			{
-				if(*it == ((nmap-1)<<7)+nscr)
-					looped = true;
-			}
-			
-			done.push_back(((nmap-1)<<7)+nscr);
-		}
+		});
 	}
 }
 void unsetxmapflag(int32_t screen, uint32_t flag)
@@ -2284,33 +2257,13 @@ void unsetxmapflag_mi(int32_t mi, uint32_t flag)
 	
 	if((scr->exstate_carry&flag)==flag)
 	{
-		byte nmap=TheMaps[((cmap)*MAPSCRS)+cscr].nextmap;
-		byte nscr=TheMaps[((cmap)*MAPSCRS)+cscr].nextscr;
-		
-		std::vector<int32_t> done;
-		bool looped = (nmap==cmap+1 && nscr==cscr);
-		
-		while((nmap!=0) && !looped && !(nscr>=128))
-		{
-			if(game->xstates.get(((nmap-1)<<7)+nscr) & flag)
+		for_each_carryover_screen(cmap, cscr, [&](int map, int screen) {
+			if(game->xstates.get(mapind(map, screen)) & flag)
 			{
-				log_state_change(nmap, nscr, "ExState change carried over");
-				game->xstates[((nmap-1)<<7)+nscr] &= ~flag;
+				log_state_change(map, screen, "ExState change carried over");
+				game->xstates[mapind(map, screen)] &= ~flag;
 			}
-			
-			cmap=nmap;
-			cscr=nscr;
-			nmap=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextmap;
-			nscr=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextscr;
-			
-			for(std::vector<int32_t>::iterator it = done.begin(); it != done.end(); it++)
-			{
-				if(*it == ((nmap-1)<<7)+nscr)
-					looped = true;
-			}
-			
-			done.push_back(((nmap-1)<<7)+nscr);
-		}
+		});
 	}
 }
 bool getxmapflag(int32_t screen, uint32_t flag)
@@ -2401,6 +2354,9 @@ int32_t WARPCODE(int32_t dmap,int32_t screen,int32_t dw)
         return -1;
         
     int32_t ring=scr->catchall;
+    // A quest or script can set the catchall to anything.
+    if(unsigned(ring) >= NUM_WARP_RINGS)
+        return -2;
     int32_t size=QMisc.warp[ring].size;
     
     if(size==0)
@@ -3376,36 +3332,14 @@ void trigger_secrets_for_screen(TriggerSource source, mapscr* scr, bool high16on
 	// Respect secret state carryovers for active screens.
 	if (single >= 0) return;
 	if(scr->nocarry&mSECRET) return;
-	int cmap = scr->map;
-	int cscr = scr->screen;
-	int nmap=TheMaps[((cmap)*MAPSCRS)+cscr].nextmap;
-	int nscr=TheMaps[((cmap)*MAPSCRS)+cscr].nextscr;
-
-	std::vector<int32_t> done;
-	bool looped = (nmap==cmap+1 && nscr==cscr);
-
-	while((nmap!=0) && !looped && !(nscr>=128))
-	{
-		if (nmap - 1 == cur_map && is_in_current_region(nscr) && !get_screen_state(nscr).triggered_secrets)
+	for_each_carryover_screen(scr->map, scr->screen, [&](int map, int screen) {
+		if (map == cur_map && is_in_current_region(screen) && !get_screen_state(screen).triggered_secrets)
 		{
 			log_trigger_secret_reason(TriggerSource::SecretsScreenState);
-			trigger_secrets_for_screen_internal(create_screen_handles(get_scr(nscr)), from_active_screen, high16only, single, do_replay_comment);
-			get_screen_state(nscr).triggered_secrets = true;
+			trigger_secrets_for_screen_internal(create_screen_handles(get_scr(screen)), from_active_screen, high16only, single, do_replay_comment);
+			get_screen_state(screen).triggered_secrets = true;
 		}
-		
-		cmap=nmap;
-		cscr=nscr;
-		nmap=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextmap;
-		nscr=TheMaps[((cmap-1)*MAPSCRS)+cscr].nextscr;
-		
-		for(auto it = done.begin(); it != done.end(); it++)
-		{
-			if(*it == ((nmap-1)<<7)+nscr)
-				looped = true;
-		}
-		
-		done.push_back(((nmap-1)<<7)+nscr);
-	}
+	});
 }
 
 void trigger_secrets_for_screen(TriggerSource source, int32_t screen, bool high16only, int32_t single)
@@ -3429,7 +3363,7 @@ void trigger_secrets_for_screen_internal(const screen_handles_t& screen_handles,
 		for_every_combo_in_screen(screen_handles, [&](const auto& handle) {
 			TriggerData([](combo_trigger const& trig){
 				return trig.trigger_flags.get(TRIGFLAG_SECRETSTR);
-			}).set_special(ctrigSECRETS).execute(handle);
+			}).set_special(ctrigSECRETS).set_cause("Secrets->").execute(handle);
 		});
 	}
 
@@ -4834,6 +4768,32 @@ static void do_trigger_prox_ranges()
 	end_info_bmp();
 }
 
+// Show trigger log cheat: outline the combos whose triggers recently fired (yellow) or failed a
+// condition (red), fading out over TRIGGER_LOG_HIGHLIGHT_FRAMES. The log itself goes to the
+// console and allegro.log, and its latest lines to the screen (see render.cpp).
+static void do_trigger_log_highlights()
+{
+	if (!show_trigger_log || !info_bmp_enabled())
+		return;
+
+	start_info_bmp();
+
+	int frame = trigger_log_current_frame();
+	for (auto const& [_, h] : trigger_log_highlights())
+	{
+		float x = h.x - viewport.x + 0.5f;
+		float y = h.y + playing_field_offset - viewport.y + 0.5f;
+		float alpha = (info_opacity / 255.0f) * (1 - (frame - h.frame) / float(TRIGGER_LOG_HIGHLIGHT_FRAMES + 1));
+		// Premultiplied, like everything drawn with the default blender.
+		ALLEGRO_COLOR col = h.fired
+			? al_map_rgba_f(alpha, alpha, 0, alpha)
+			: al_map_rgba_f(alpha, alpha * 0.25f, alpha * 0.25f, alpha);
+		al_draw_rectangle(x, y, x + h.width - 1, y + h.height - 1, col, 1);
+	}
+
+	end_info_bmp();
+}
+
 // Show viewport follow cheat: draw the follow state, so quest makers can see the deadzone box
 // and watch the lookahead offset build, hold and ease.
 //   - cyan box: the deadzone, centered on the viewport's focus (white cross). The aim point
@@ -5502,6 +5462,9 @@ void draw_screen(bool showhero, bool runGeneric, bool drawPassiveSubscreenSepara
 
 	// Show trigger proximity cheat
 	do_trigger_prox_ranges();
+
+	// Show trigger log cheat
+	do_trigger_log_highlights();
 
 	// Show viewport follow cheat
 	do_viewport_follow_overlay();
@@ -6597,7 +6560,7 @@ void openshutters(mapscr* scr)
 			return;
 		TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.get(TRIGFLAG_SHUTTER);
-		}).execute(handle);
+		}).set_cause("Shutter->").execute(handle);
 	});
 
 	if(opened_door)
@@ -7155,10 +7118,7 @@ void loadscr(int32_t destdmap, int32_t screen, int32_t ldir, bool origin_screen_
 	game->load_portal();
 	throwGenScriptEvent(GENSCR_EVENT_CHANGE_SCREEN);
 	if (Hero.lift_wpn && get_qr(qr_CARRYABLE_NO_ACROSS_SCREEN) && !(Hero.lift_wpn->misc_wflags & WFLAG_CARRYABLE_CROSS_SCREEN))
-	{
-		delete Hero.lift_wpn;
-		Hero.lift_wpn = nullptr;
-	}
+		Hero.delete_liftwpn();
 
 	enemy_spawning_has_checked_been_here = false;
 	// When `scrollscr` calls this during a scrolling warp, `cur_dmap` still holds the old dmap
@@ -7634,7 +7594,7 @@ bool _walkflag(zfix_round zx,zfix_round zy,int32_t cnt)
 bool _walkflag_new(std::array<const mapscr*, 7> screens, zfix_round zx, zfix_round zy, zfix const& standing_z_state, bool is_temp_screens)
 {
 	int x = zx.getRound(), y = zy.getRound();
-	int pos = COMBOPOS(x % 256, y % 176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	const newcombo& c = combobuf[screens[0]->data[pos]];
 	const newcombo& c1 = combobuf[screens[1]->data[pos]];
 	const newcombo& c2 = combobuf[screens[2]->data[pos]];
@@ -7744,7 +7704,7 @@ static bool effectflag(int32_t x, int32_t y, int32_t layer)
 	int32_t b = 1;
 	if (x&8) b <<= 2;
 	if (y&8) b <<= 1;
-	int pos = COMBOPOS(x % 256, y % 176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	
 	int maxlayer = get_qr(qr_BRIDGES_ABOVE_2) ? 6 : 2;
 	for (int lyr = maxlayer; lyr > layer; --lyr)
@@ -7850,7 +7810,7 @@ static bool _walkflag_layer_new(zfix_round zx,zfix_round zy,int32_t cnt, mapscr*
 
 	if(!m) return true;
 	
-	int pos = COMBOPOS(x%256, y%176);
+	int pos = COMBOPOS_IN_SCREEN(x, y);
 	const newcombo* c = &combobuf[m->data[pos]];
 	bool dried = ((iswater_type(c->type)) && DRIEDLAKE);
 	int32_t b=1;
@@ -8039,7 +7999,7 @@ void toggle_switches(dword flags, bool entry, const screen_handles_t& screen_han
 	if(!flags) return; //No flags to toggle
 	TriggerData level_trigger = TriggerData([&](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_TRIGLEVELSTATE) && trig.trig_lstate < 32 && (flags&(1<<trig.trig_lstate));
-	}).set_special(ctrigSWITCHSTATE);
+	}).set_special(ctrigSWITCHSTATE).set_cause("LevelState toggles");
 
 	mapscr* m = screen_handles[0].base_scr;
 	int screen = m->screen;
@@ -8183,7 +8143,7 @@ void toggle_gswitches(bool* states, bool entry, const screen_handles_t& screen_h
 	if(!states) return;
 	TriggerData global_trigger = TriggerData([&](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_TRIGGLOBALSTATE) && states[trig.trig_gstate];
-	}).set_special(ctrigSWITCHSTATE);
+	}).set_special(ctrigSWITCHSTATE).set_cause("GlobalState toggles");
 
 	mapscr* base_scr = screen_handles[0].base_scr;
 	int screen = base_scr->screen;

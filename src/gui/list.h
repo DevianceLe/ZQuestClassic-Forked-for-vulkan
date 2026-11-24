@@ -1,5 +1,4 @@
-#ifndef ZC_GUI_LIST_H_
-#define ZC_GUI_LIST_H_
+#pragma once
 
 #include "gui/widget.h"
 #include "gui/dialog_ref.h"
@@ -21,7 +20,9 @@ class List: public Widget
 public:
 	List();
 
-	/* Sets the source of items to appear in the list. */
+	/* Sets the source of items to appear in the list. With multi-select, the
+	 * selection is kept if the number of items is the same.
+	 */
 	void setListData(const ::GUI::ListData& newListData);
 
 	/* Sets the value of the list item to select. If there is no item with
@@ -59,6 +60,17 @@ public:
 
 	void setIsABC(bool abc);
 
+	/* Lets more than one item be selected, with shift+click (a range),
+	 * ctrl+click (one more item) and ctrl+A (all of them). Not supported
+	 * for ABC lists.
+	 */
+	void setMultiSelect(bool multi);
+
+	/* Returns the values of every selected item, in list order. Without
+	 * multi-select, that's just the selected value.
+	 */
+	std::vector<int32_t> getSelectedValues() const;
+
 	template<typename T>
 	RequireMessage<T> onSelectionChanged(T m)
 	{
@@ -90,6 +102,10 @@ private:
 	GUI::function<void(int32_t,int32_t,int32_t)> onDClickFunc;
 	bool isABC;
 	size_t* scrollPtr;
+	// With multi-select, flags the items selected besides the current one (d1), which
+	// always counts as selected.
+	bool multiSelect;
+	std::vector<char> extraSelected;
 	
 	void applyVisibility(bool visible) override;
 	void applyDisabled(bool dis) override;
@@ -98,5 +114,3 @@ private:
 };
 
 }
-
-#endif

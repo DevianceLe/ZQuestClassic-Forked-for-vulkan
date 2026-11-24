@@ -1,5 +1,4 @@
-#ifndef REPLAY_H_
-#define REPLAY_H_
+#pragma once
 
 #include "base/random.h"
 #include "zc/cheats.h"
@@ -28,6 +27,10 @@ enum ReplayMode
 
 std::string replay_mode_to_string(ReplayMode mode);
 std::map<std::string, std::string> replay_load_meta(std::filesystem::path path);
+#ifdef ZC_FUZZ
+// Parses a whole replay file, then throws the result away.
+void replay_fuzz_load(std::filesystem::path path);
+#endif
 // Returns false if a replay file could not be loaded (missing/unreadable/malformed),
 // in which case replay mode is left Off.
 bool replay_start(ReplayMode mode_, std::filesystem::path path, int frame);
@@ -44,6 +47,7 @@ bool replay_init_game_in_new_process();
 void replay_on_program_exit();
 void replay_on_game_saved();
 void replay_peek_input();
+void replay_apply_input();
 void replay_do_cheats();
 void replay_do_qrs(bool frame_start);
 bool replay_is_assert_done();
@@ -98,6 +102,7 @@ void replay_set_sync_rng(bool enable);
 bool replay_is_replaying();
 bool replay_is_recording();
 void replay_enable_exit_when_done();
+bool replay_is_exit_when_done();
 // Batch mode: when a replay finishes, instead of exiting the process, ask the host
 // (via replay_batch_load_next) to load the next replay in the batch. The process only
 // exits once the batch is exhausted. Used to run many replays back-to-back in one
@@ -123,5 +128,3 @@ enum ReplayStateType
 };
 
 int replay_get_state(ReplayStateType state_type, int fn());
-
-#endif

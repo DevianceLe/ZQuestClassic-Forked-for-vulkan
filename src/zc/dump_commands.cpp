@@ -7,6 +7,7 @@
 #include "core/mapscr.h"
 #include "core/qrs.h"
 #include "core/qst.h"
+#include "core/trigger_graph.h"
 #include "ffc.h"
 #include "core/misctypes.h"
 #include "zc/zc_sys.h"
@@ -264,9 +265,47 @@ void do_dump_screen_command(const char* quest_path, int map, int screen)
 
 		json triggers = json::array();
 		for (const auto& trig : cmb.triggers)
-			triggers.push_back(util::split(trig.summarize(cmb), "\n"));
+			triggers.push_back(util::split(trig.summarize(cmb, cid), "\n"));
 		j["combo_triggers"][std::to_string(cid)] = triggers;
 	}
+
+	// The same triggers as a graph of the combos, their combo changes and what links them
+	// (copycats, trigger groups, states, secrets), with every layer and FFC: what the
+	// editor's Combo Triggers diagram draws. In a scrolling region, the combos on the other
+	// screens that share its copycats and trigger groups are noted too.
+	auto region = trigger_graph_region(map, screen);
+	if (region.size() > 1)
+	{
+		j["region"] = json::array();
+		for (auto const& s : region)
+			j["region"].push_back(s.screen);
+	}
+	j["trigger_graph"] = trigger_graph_json(build_trigger_graph(region, screen));
+
+	printf("%s\n", j.dump(2).c_str());
+	zapp_exit(0);
+}
+
+void do_dump_region_command(const char* quest_path, int map, int screen)
+{
+	load_quest_for_inspection(quest_path);
+
+	if (unsigned(map) >= map_count || unsigned(screen) >= MAPSCRS)
+	{
+		fprintf(stderr, "-dump-region: quest has %d maps and %d screens per map; got map %d, screen %d\n",
+			map_count, MAPSCRS, map, screen);
+		zapp_exit(1);
+	}
+
+	auto region = trigger_graph_region(map, screen);
+	json j;
+	j["quest"] = quest_path;
+	j["version"] = QHeader.getVerStr();
+	j["map"] = map;
+	j["screens"] = json::array();
+	for (auto const& s : region)
+		j["screens"].push_back(s.screen);
+	j["trigger_graph"] = trigger_graph_json(build_trigger_graph(region));
 
 	printf("%s\n", j.dump(2).c_str());
 	zapp_exit(0);

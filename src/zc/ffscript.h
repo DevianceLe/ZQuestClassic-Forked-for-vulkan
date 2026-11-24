@@ -1,5 +1,4 @@
-#ifndef FFSCRIPT_H_
-#define FFSCRIPT_H_
+#pragma once
 
 #include "core/dmap.h"
 #include "core/quest_format.h"
@@ -302,10 +301,10 @@ struct user_paldata : public script_object_base
 	void mix(user_paldata *pal_start, user_paldata *pal_end, double percent, int32_t color_space = CSPACE_RGB, int32_t start_color = 0, int32_t end_color = 240);
 };
 
-#define MAX_SCRIPT_ARRAYS 100000
+#define MAX_SCRIPT_ARRAYS 1000000
 
 script_array* create_script_array();
-void register_existing_script_array(script_array* array);
+bool register_existing_script_array(script_array* array);
 std::vector<script_array*> get_script_arrays();
 script_array* find_or_create_internal_script_array(script_array::internal_array_id internal_id);
 script_array* checkArray(uint32_t id, bool skipError = false);
@@ -1004,8 +1003,18 @@ inline bool instruction_is_suspend(const ffscript& op)
 // For the JIT backends: true if `op` must run in the interpreter even when its command is compiled.
 // The interpreter is what acts on a script being stopped mid-frame (see
 // instruction_could_return_not_ok), and compiled code checks the result of interpreted commands.
+//
+// A push or pop of more values than the stack holds, or of a negative number of them, is also left
+// to the interpreter. The compiler never emits one, so this costs real scripts nothing, and
+// compiled code can then assume every count is in range.
 inline bool jit_instruction_runs_in_interpreter(const ffscript& op)
 {
+	if (op.command == PUSHARGSR || op.command == PUSHARGSV || op.command == POPARGS)
+	{
+		if (op.arg2 < 0 || op.arg2 > MAX_STACK_SIZE)
+			return true;
+	}
+
 	return instruction_could_return_not_ok(op);
 }
 // Compiled code keeps its own copy of sp, so after the interpreter runs one of these commands for
@@ -1176,7 +1185,5 @@ void print_d_register_deps();
 #define GET_D(r) ri->d[r]
 #define SET_D(r, v) ri->d[r] = (v)
 #define GET_REF(x) (ri->x()+0)
-
-#endif
 
 #endif

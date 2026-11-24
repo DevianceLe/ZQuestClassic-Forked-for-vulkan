@@ -50,6 +50,7 @@
 #include "zc/scripting/types/portal.h"
 #include "zc/scripting/types/savedportal.h"
 #include "zc/scripting/types/subscreenwidget.h"
+#include "zc/scripting/zasm_check.h"
 #include "zc/zc_ffc.h"
 #include "zc/zc_sys.h"
 #include "zc/scripting/jit/jit.h"
@@ -66,6 +67,7 @@
 #include "base/util.h"
 #include "zc/ending.h"
 #include "zc/combos.h"
+#include "zc/combo_trigger_log.h"
 #include "drawing.h"
 #include "zalleg/colors.h"
 #include "pal.h"
@@ -174,7 +176,7 @@ ScriptDebugHandle* runtime_script_debug_handle;
 CScriptDrawingCommands scriptdraws;
 FFScript FFCore;
 
-static UserDataContainer<script_array, 1000000> script_arrays = {script_object_type::array, "array"};
+static UserDataContainer<script_array, MAX_SCRIPT_ARRAYS> script_arrays = {script_object_type::array, "array"};
 static UserDataContainer<user_paldata, MAX_USER_PALDATAS> user_paldatas = {script_object_type::paldata, "paldata"};
 static UserDataContainer<user_rng, MAX_USER_RNGS> user_rngs = {script_object_type::rng, "rng"};
 extern UserDataContainer<user_stack, MAX_USER_STACKS> user_stacks;
@@ -293,9 +295,9 @@ script_array* create_script_array()
 	return script_arrays.create();
 }
 
-void register_existing_script_array(script_array* array)
+bool register_existing_script_array(script_array* array)
 {
-	script_arrays.register_existing(array);
+	return script_arrays.register_existing(array);
 }
 
 std::vector<script_array*> get_script_arrays()
@@ -455,6 +457,10 @@ int32_t CScriptDrawingCommands::GetCount()
 mapscr* GetScrollingMapscr(int layer, int x, int y)
 {
 	if (!screenscrolling)
+		return nullptr;
+
+	// Scripts can pass any position.
+	if (x < 0 || y < 0 || x >= scrolling_region.width || y >= scrolling_region.height)
 		return nullptr;
 
 	int screen = scrolling_region.origin_screen + map_scr_xy_to_index(x / 256, y / 176);
@@ -2575,7 +2581,11 @@ mapscr* checkMapDataScr(int32_t ref)
 
 screendata* checkScreen(int32_t ref)
 {
-	return (screendata*)get_scr_maybe(cur_map, ref);
+	// Only the screens of the current region are loaded.
+	mapscr* scr = (unsigned)ref < MAPSCRS ? get_scr_maybe(cur_map, ref) : nullptr;
+	if (!scr)
+		scripting_log_error_with_context("Invalid {} using UID = {}", "screendata", ref);
+	return (screendata*)scr;
 }
 
 mapscr* get_script_screen()
@@ -3205,8 +3215,14 @@ void stack_push(int32_t val)
 }
 void stack_push(int32_t val, size_t count)
 {
-	if (!check_stack(ri->sp - count))
+	// The pushes fill the slots from sp - count to sp - 1. So count can't be more than sp, and sp
+	// can't be past MAX_STACK_SIZE, the empty stack (SETR can set SP to anything).
+	if (count > ri->sp || ri->sp > MAX_STACK_SIZE)
+	{
+		log_stack_overflow_error();
+		ri->overflow = true;
 		return;
+	}
 
 	for(int q = 0; q < count; ++q)
 	{
@@ -3361,6 +3377,7 @@ void do_push_varg(const bool v)
 void do_push_vargs(const bool v)
 {
 	if(sarg2 < 1) return;
+	ZASM_CHECK(sarg2 <= MAX_ZSCRIPT_INT);
 	const int value = SH::get_arg(sarg1, v);
 	auto& vec = ri->zs_vargs_stack.back();
 	vec.insert(vec.end(), sarg2, value);
@@ -3396,6 +3413,7 @@ void do_pops() // Pop past a bunch of stuff at once. Useful for clearing the sta
 
 void do_pushs(const bool v) // Push a bunch of the same thing. Useful for filling the stack.
 {
+	if(sarg2 < 1) return;
 	const int value = SH::get_arg(sarg1, v);
 	stack_push(value, sarg2);
 }
@@ -3461,7 +3479,12 @@ void do_store(const bool v)
 
 void script_store_object(uint32_t offset, uint32_t new_id)
 {
-	DCHECK(offset < MAX_STACK_SIZE);
+	// Compiled scripts never get here, but quests can hold any ZASM (see script_mark_type_stack).
+	if (offset >= MAX_STACK_SIZE)
+	{
+		SH::write_stack_oob();
+		return;
+	}
 
 	// Increase, then decrease, to handle the case where a variable (holding the only reference to an object) is assigned to itself.
 	// This is unlikely so lets not bother with a conditional that skips both ref modifications when the ids are equal.
@@ -3496,7 +3519,7 @@ void script_ref_change(bool is_this, int32_t offset, bool inc)
 	{
 		if (!ri->stackPosHasObject(offset))
 		{
-			assert(false);
+			ZASM_DCHECK(false);
 			return;
 		}
 		id = SH::read_stack(offset);
@@ -3510,9 +3533,11 @@ void script_ref_change(bool is_this, int32_t offset, bool inc)
 
 void script_mark_type_stack(int32_t offset, bool is_object)
 {
+	// Like any other access to a stack slot (see SH::write_stack). Compiled scripts never get
+	// here, but quests can hold any ZASM.
 	if (offset < 0 || offset >= MAX_STACK_SIZE)
 	{
-		assert(false);
+		SH::write_stack_oob();
 		return;
 	}
 
@@ -3524,9 +3549,10 @@ void script_mark_type_stack(int32_t offset, bool is_object)
 
 void script_remove_object_ref(int32_t offset)
 {
+	// See script_mark_type_stack.
 	if (offset < 0 || offset >= MAX_STACK_SIZE)
 	{
-		assert(false);
+		SH::write_stack_oob();
 		return;
 	}
 
@@ -3787,11 +3813,19 @@ uint32_t allocatemem(int32_t size, bool local, ScriptType type, const uint32_t U
 	return array->id;
 }
 
+// Reads a script_object_type from an opcode argument, tolerating invalid values
+// (quests compiled before these arguments existed always serialized 0/none).
+static script_object_type get_object_type_from_sarg(int32_t arg)
+{
+	if (arg > 0 && arg <= (int)script_object_type::last)
+		return (script_object_type)arg;
+	return script_object_type::none;
+}
+
 void do_allocatemem(bool v, const bool local, ScriptType type, const uint32_t UID)
 {
 	int32_t size = SH::get_arg(sarg2, v) / 10000;
-	assert(sarg3 >= 0 && sarg3 <= (int)script_object_type::last);
-	uint32_t id = allocatemem(size, local, type, UID, (script_object_type)sarg3);
+	uint32_t id = allocatemem(size, local, type, UID, get_object_type_from_sarg(sarg3));
 	set_register(sarg1, id);
 }
 
@@ -4443,10 +4477,18 @@ void do_mapdataissolid()
 		else if (result.type == mapdata_type::TemporaryScrollingRegion && result.layer == 0)
 		{
 			std::array<const mapscr*, 7> screens;
-			for (int lyr = 0; lyr < 7; ++lyr)
+			screens[0] = GetScrollingMapscr(0, x, y);
+			// Nothing is solid off the scrolling region.
+			if (!screens[0])
+			{
+				set_register(sarg1, 0);
+				return;
+			}
+			for (int lyr = 1; lyr < 7; ++lyr)
 			{
 				screens[lyr] = GetScrollingMapscr(lyr, x, y);
-				if (lyr && !screens[lyr]->valid)
+				// A layer the screen doesn't have is skipped by checking layer 0 again.
+				if (!screens[lyr])
 					screens[lyr] = screens[0];
 			}
 			bool result = _walkflag_new(screens, x, y, 0_zf, true);
@@ -4479,13 +4521,47 @@ void do_mapdataissolid_layer()
 		}
 		else
 		{
-			if (result.type == mapdata_type::TemporaryCurrentRegion && result.layer == 0)
+			if (result.temporary() && result.layer == 0)
 			{
-				set_register(sarg1, (_walkflag_layer(x, y, 1, result.scr)) ? 10000 : 0);
-			}
-			else if (result.type == mapdata_type::TemporaryScrollingRegion && result.layer == 0)
-			{
-				set_register(sarg1, (_walkflag_layer_scrolling(x, y, 1, result.scr)) ? 10000 : 0);
+				// Check the live screen of the layer, as Screen->isSolidLayer() does. A layer that
+				// isn't there is not solid.
+				bool solid = false;
+				switch (result.type)
+				{
+					case mapdata_type::TemporaryCurrentRegion:
+					{
+						// Find the screen at this spot in the region.
+						solid = _walkflag_layer(x, y, layer - 1, 1);
+						break;
+					}
+					case mapdata_type::TemporaryScrollingRegion:
+					{
+						bool in_region = x >= 0 && y >= 0 && x < scrolling_region.width && y < scrolling_region.height;
+						if (mapscr* m = in_region ? GetScrollingMapscr(layer, x, y) : nullptr)
+							solid = _walkflag_layer_scrolling(x, y, 1, m);
+						break;
+					}
+					case mapdata_type::TemporaryCurrentScreen:
+					{
+						if (mapscr* m = get_scr_layer(result.screen, layer); m->is_valid())
+							solid = _walkflag_layer(x, y, 1, m);
+						break;
+					}
+					case mapdata_type::TemporaryScrollingScreen:
+					{
+						size_t index = result.screen * 7 + layer;
+						if (index < FFCore.ScrollingScreensAll.size())
+						{
+							mapscr* m = FFCore.ScrollingScreensAll[index];
+							if (m && m->is_valid())
+								solid = _walkflag_layer_scrolling(x, y, 1, m);
+						}
+						break;
+					}
+					default:
+						break;
+				}
+				set_register(sarg1, solid ? 10000 : 0);
 			}
 			else
 			{
@@ -4493,13 +4569,16 @@ void do_mapdataissolid_layer()
 
 				if(layer > 0)
 				{
-					if(m->layermap[layer] == 0)
+					// layermap holds the map number + 1 (0 for no layer), and its first entry is
+					// layer 1.
+					int index = (m->layermap[layer - 1] - 1) * MAPSCRS + m->layerscreen[layer - 1];
+					if(m->layermap[layer - 1] == 0 || (unsigned)index >= TheMaps.size())
 					{
 						set_register(sarg1,10000);
 						return;
 					}
 
-					m = &TheMaps[(m->layermap[layer]*MAPSCRS + m->layerscreen[layer])];
+					m = &TheMaps[index];
 				}
 
 				set_register(sarg1, (_walkflag_layer(x, y, 1, m) ? 10000 : 0));
@@ -4532,7 +4611,7 @@ void do_setsidewarp()
 	int32_t type   = SH::read_stack(ri->sp + 0) / 10000;
 	
 	current_zasm_extra_context = "warp";
-	if (BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if (BC::checkBounds(warp, 0, 3) != SH::_NoError)
 		return;
 
 	current_zasm_extra_context = "screen";
@@ -4569,7 +4648,7 @@ void do_settilewarp()
 	int32_t type   = SH::read_stack(ri->sp + 0) / 10000;
 
 	current_zasm_extra_context = "warp";
-	if (BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if (BC::checkBounds(warp, 0, 3) != SH::_NoError)
 		return;
 
 	current_zasm_extra_context = "screen";
@@ -4602,7 +4681,7 @@ void do_getsidewarpdmap(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4615,7 +4694,7 @@ void do_getsidewarpscr(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4628,7 +4707,7 @@ void do_getsidewarptype(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4641,7 +4720,7 @@ void do_gettilewarpdmap(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4654,7 +4733,7 @@ void do_gettilewarpscr(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4667,7 +4746,7 @@ void do_gettilewarptype(const bool v)
 {
 	int32_t warp = SH::get_arg(sarg1, v) / 10000;
 	
-	if(BC::checkBounds(warp, -1, 3) != SH::_NoError)
+	if(BC::checkBounds(warp, 0, 3) != SH::_NoError)
 	{
 		set_register(sarg1, -10000);
 		return;
@@ -4707,6 +4786,10 @@ void do_triggersecrets(int screen)
 		scripting_log_error_with_context("Must be given a screen in the current region. got: {}", screen);
 		return;
 	}
+
+	// A region can have a screen that doesn't exist, which has no secrets to trigger.
+	if (!get_scr(screen)->is_valid())
+		return;
 
 	trigger_secrets_for_screen(TriggerSource::Script, screen, false);
 }
@@ -5257,7 +5340,7 @@ void FFScript::do_loaddropset(const bool v)
 {
 	int32_t ID = SH::get_arg(sarg1, v) / 10000;
 	
-	if ( ID < 0 || ID > MAXITEMDROPSETS )
+	if ( ID < 0 || ID >= MAXITEMDROPSETS )
 	{
 		scripting_log_error_with_context("Invalid Dropset ID: {}", ID);
 		ri->dropsetdataref() = MAX_DWORD;
@@ -5467,6 +5550,8 @@ void FFScript::do_paldata_load_level()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		//Load CSets 2-4
 		pd->load_cset(2, lvl * pdLEVEL + poLEVEL + 0);
 		pd->load_cset(3, lvl * pdLEVEL + poLEVEL + 1);
@@ -5522,6 +5607,8 @@ void FFScript::do_paldata_load_cycle()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		for (int32_t q = 4; q <= 12; ++q)
 		{
 			pd->load_cset(q, lvl * pdLEVEL + poLEVEL + q);
@@ -5548,8 +5635,11 @@ void FFScript::do_paldata_load_bitmap()
 		}
 		else
 		{
-			str = user_path;
-			util::regulate_path(str);
+			if (auto r = parse_legacy_user_path(user_path); !r)
+			{
+				scripting_log_error_with_context("Error: {}", r.error());
+				return;
+			} else str = r.value();
 		}
 
 		if (str.empty())
@@ -5590,6 +5680,8 @@ void FFScript::do_paldata_write_level()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		bool changed = false;
 		//Write CSets 2-4
 		if (pd->check_cset(2, lvl * pdLEVEL + poLEVEL + 0))
@@ -5660,6 +5752,8 @@ void FFScript::do_paldata_write_levelcset()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		int32_t cs = get_register(sarg2) / 10000;
 
 		bool changed = false;
@@ -5817,9 +5911,10 @@ void FFScript::do_paldata_write_spritecset()
 		}
 		bool changed6 = false;
 		bool changed14 = false;
-		if (unsigned(cs) > 15)
+		// A sprite page has 15 csets.
+		if (unsigned(cs) > 14)
 		{
-			Z_scripterrlog("Invalid CSet (%d) passed to paldata->WriteSpriteCSet(). Valid CSets are 0-15. Aborting.\n", cs);
+			Z_scripterrlog("Invalid CSet (%d) passed to paldata->WriteSpriteCSet(). Valid CSets are 0-14. Aborting.\n", cs);
 			return;
 		}
 		if (pd->check_cset(cs, poSPRITE255 + pageoffset + cs))
@@ -5911,6 +6006,8 @@ void FFScript::do_paldata_write_cycle()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		for (int32_t q = 4; q <= 12; ++q)
 		{
 			if (pd->check_cset(q, lvl * pdLEVEL + poLEVEL + q))
@@ -5927,6 +6024,8 @@ void FFScript::do_paldata_write_cyclecset()
 	if (user_paldata* pd = checkPalData(GET_REF(paldataref)))
 	{
 		int32_t lvl = get_register(sarg1) / 10000;
+		if (BC::checkBounds(lvl, 0, MAXLEVELS - 1, "level") != SH::_NoError)
+			return;
 		int32_t cs = get_register(sarg2) / 10000;
 
 		bool changed = false;
@@ -6155,6 +6254,11 @@ void FFScript::do_paldata_copycset()
 			if (unsigned(cs) > 15)
 			{
 				Z_scripterrlog("Invalid CSet (%d) passed to paldata->CopyCSet(). Valid CSets are 0-15. Aborting.\n", cs);
+				return;
+			}
+			if (unsigned(cs_dest) > 15)
+			{
+				Z_scripterrlog("Invalid CSet (%d) passed to paldata->CopyCSet(). Valid CSets are 0-15. Aborting.\n", cs_dest);
 				return;
 			}
 			for (int32_t q = 0; q < 16; ++q)
@@ -7163,6 +7267,18 @@ void FFScript::do_loadbitmapid(const bool v)
 	}
 }
 
+// The screen a sprite a script creates is spawned on. Scripts can set the screen ref to anything,
+// but consumers of screen_spawned need it to be a loaded screen (see SPRITE_SPAWN_SCREEN).
+static int script_spawn_screen()
+{
+	int screen = ri->screenref();
+	if (is_in_current_region(screen))
+		return screen;
+
+	scripting_log_error_with_context("Invalid screen {}: screen is not in the current region", screen);
+	return cur_screen;
+}
+
 void do_createlweapon(const bool v)
 {
 	const int32_t ID = SH::get_arg(sarg1, v) / 10000;
@@ -7193,7 +7309,7 @@ void do_createlweapon(const bool v)
 		);
 		weapon *w = (weapon*)Lwpns.spr(Lwpns.Count()-1); //last created
 		ri->lwpnref() = w->getUID();
-		w->screen_spawned = ri->screenref();
+		w->screen_spawned = script_spawn_screen();
 		w->ScriptGenerated = 1;
 		w->isLWeapon = 1;
 		if(ID == wWind) w->specialinfo = 1;
@@ -7222,7 +7338,7 @@ void do_createeweapon(const bool v)
 		if( ID > wEnemyWeapons || ( ID >= wScript1 && ID <= wScript10) )
 		{
 			weapon *w = (weapon*)Ewpns.spr(Ewpns.Count()-1); //last created
-			w->screen_spawned = ri->screenref();
+			w->screen_spawned = script_spawn_screen();
 			w->ScriptGenerated = 1;
 			w->isLWeapon = 0;
 			ri->ewpnref() = w->getUID();
@@ -7252,7 +7368,7 @@ void do_createitem(const bool v)
 	{
 		additem(0, (get_qr(qr_NOITEMOFFSET) ? 1: 0), ID, ipBIGRANGE);
 		sprite* item = items.spr(items.Count() - 1);
-		item->screen_spawned = ri->screenref();
+		item->screen_spawned = script_spawn_screen();
 		ri->itemref() = item->getUID();
 		Z_eventlog("Script created item \"%s\" with UID = %u\n", itemsbuf.get(ID).name.c_str(), ri->itemref());
 	}
@@ -7271,7 +7387,8 @@ void do_createnpc(const bool v)
 		return;
 		
 	//If we make a segmented enemy there'll be more than one sprite created
-	word numcreated = addenemy(ri->screenref(), 0, 0, ID, -10);
+	int spawn_screen = script_spawn_screen();
+	word numcreated = addenemy(spawn_screen, 0, 0, ID, -10);
 	
 	if(numcreated == 0)
 	{
@@ -7287,7 +7404,7 @@ void do_createnpc(const bool v)
 		{
 			enemy* e = ((enemy*)guys.spr(index));
 			e->script_spawned = true;
-			e->screen_spawned = ri->screenref();
+			e->screen_spawned = spawn_screen;
 		}
 			
 		Z_eventlog("Script created NPC \"%s\" with UID = %u\n", guy_string[ID], ri->npcref());
@@ -7689,7 +7806,7 @@ static void do_drawing_command(int32_t script_command, bool is_screen_draw)
 				return;
 			}
 			std::vector<int32_t> *v = script_drawing_commands.GetVector();
-			v->resize(sz, 0);
+			v->resize(26, 0);
 			
 			int32_t* pos = &v->at(0);
 			int32_t* uv = &v->at(12);
@@ -7724,7 +7841,7 @@ static void do_drawing_command(int32_t script_command, bool is_screen_draw)
 			}
 			
 			std::vector<int32_t> *v = script_drawing_commands.GetVector();
-			v->resize(sz, 0);
+			v->resize(20, 0);
 			
 			int32_t* pos = &v->at(0);
 			int32_t* uv = &v->at(9);
@@ -7826,17 +7943,24 @@ static void do_drawing_command(int32_t script_command, bool is_screen_draw)
 			string& user_path = *script_drawing_commands.GetString();
 			ArrayH::getString(script_drawing_commands[j][2], user_path, 256);
 
+			// A refused path drops the command, so the target bitmap is left as it was.
 			if (get_qr(qr_BITMAP_AND_FILESYSTEM_PATHS_ALWAYS_RELATIVE))
 			{
 				if (auto r = parse_user_path(user_path, true); !r)
 				{
 					scripting_log_error_with_context("Error: {}", r.error());
+					script_drawing_commands.PopLast();
 					return;
 				} else user_path = r.value();
 			}
 			else
 			{
-				util::regulate_path(user_path);
+				if (auto r = parse_legacy_user_path(user_path); !r)
+				{
+					scripting_log_error_with_context("Error: {}", r.error());
+					script_drawing_commands.PopLast();
+					return;
+				} else user_path = r.value();
 			}
 			
 			script_drawing_commands[j].SetString(&user_path);
@@ -7854,12 +7978,18 @@ static void do_drawing_command(int32_t script_command, bool is_screen_draw)
 				if (auto r = parse_user_path(user_path, true); !r)
 				{
 					scripting_log_error_with_context("Error: {}", r.error());
+					script_drawing_commands.PopLast();
 					return;
 				} else user_path = r.value();
 			}
 			else
 			{
-				util::regulate_path(user_path);
+				if (auto r = parse_legacy_user_path(user_path); !r)
+				{
+					scripting_log_error_with_context("Error: {}", r.error());
+					script_drawing_commands.PopLast();
+					return;
+				} else user_path = r.value();
 			}
 
 			script_drawing_commands[j].SetString(&user_path);
@@ -8355,7 +8485,14 @@ bool FFScript::warp_player(int32_t warpType, int32_t dmap, int32_t screen, int32
 		Z_scripterrlog("Invalid Screen Index (%d) passed to WarpEx(). Aborting.\n", screen);
 		return false;
 	}
-	//Extra sanity guard. 
+	// Small DMaps can have a negative map offset, which moves their left columns
+	// off the edge of the map.
+	if ( ((unsigned)(screen + DMaps[dmap].xoff)) >= MAPSCRS )
+	{
+		Z_scripterrlog("Screen %d of DMap %d passed to WarpEx() is outside its map (DMap offset %d). Aborting.\n", screen, dmap, DMaps[dmap].xoff);
+		return false;
+	}
+	//Extra sanity guard.
 	if ( map_screen_index(DMaps[dmap].map, screen + DMaps[dmap].xoff) >= (int32_t)TheMaps.size() )
 	{
 		Z_scripterrlog("Invalid destination passed to WarpEx(). Aborting.\n");
@@ -9184,12 +9321,16 @@ void do_copytile(const bool v, const bool v2)
 	int32_t tile = SH::get_arg(sarg1, v) / 10000;
 	int32_t tile2 = SH::get_arg(sarg2, v2) / 10000;
 	
+	if(BC::checkTile(tile) != SH::_NoError ||
+			BC::checkTile(tile2) != SH::_NoError)
+		return;
+		
 	copy_tile(newtilebuf, tile, tile2, false);
 }
 
 int32_t FFScript::IsBlankTile(int32_t i)
 {
-	if( ((unsigned)i) > NEWMAXTILES )
+	if( ((unsigned)i) >= NEWMAXTILES )
 	{
 		scripting_log_error_with_context("Invalid tile ID {}", i);
 		return -1;
@@ -9212,7 +9353,7 @@ int32_t FFScript::IsBlankTile(int32_t i)
 
 int32_t FFScript::Is8BitTile(int32_t i)
 {
-	if (((unsigned)i) > NEWMAXTILES)
+	if (((unsigned)i) >= NEWMAXTILES)
 	{
 		scripting_log_error_with_context("Invalid tile ID {}", i);
 		return -1;
@@ -9226,6 +9367,10 @@ void do_swaptile(const bool v, const bool v2)
 	int32_t tile = SH::get_arg(sarg1, v) / 10000;
 	int32_t tile2 = SH::get_arg(sarg2, v2) / 10000;
 	
+	if(BC::checkTile(tile) != SH::_NoError ||
+			BC::checkTile(tile2) != SH::_NoError)
+		return;
+		
 	copy_tile(newtilebuf, tile, tile2, true);
 }
 
@@ -9487,10 +9632,7 @@ static ZC_FORCE_INLINE bool check_cmp(uint cmp)
 
 static void markRegisterType(int reg, int type)
 {
-	if (!(type >= 0 && type <= (int)script_object_type::last))
-	{
-		assert(false);
-	}
+	ZASM_DCHECK(type >= 0 && type <= (int)script_object_type::last);
 	// Currently only marking globals / script instance vars as objects is supported.
 	if (reg >= GD(0) && reg < GD(MAX_GLOBAL_VARIABLES))
 	{
@@ -9505,7 +9647,7 @@ static void markRegisterType(int reg, int type)
 		else
 			ri->script_d_is_object.erase(index);
 	}
-	else assert(false);
+	else ZASM_DCHECK(false);
 }
 
 static void markGlobalRegisters()
@@ -9724,6 +9866,18 @@ int32_t run_script(ScriptType type, word script, int32_t i)
 		ASM_DEFINE prev = current_zasm_command;
 		~RestoreZasmCommand() { current_zasm_command = prev; }
 	} _restore_zasm_command;
+
+	// A script can also run inside another script's command: generic scripts run during the frames
+	// that commands like Screen->ZapOut() run, and commands throw generic script events. Put the
+	// outer script's state back afterwards, or it goes on running with this script's position,
+	// registers and stack. Top-level runs are left alone, since the state they leave behind is
+	// what error logs read between frames.
+	struct NestedScriptScope
+	{
+		std::optional<ScriptExecState> saved;
+		NestedScriptScope() { if (script_run_depth > 0) saved = ScriptExecState::save(); }
+		~NestedScriptScope() { if (saved) saved->restore(); }
+	} _nested_script_scope;
 
 	struct ScriptRunDepthScope
 	{
@@ -9988,15 +10142,6 @@ int32_t run_script_jit_until_call_or_return(JittedScriptInstance* j_instance, pc
 bool script_is_within_debugger_vm;
 bool suppress_script_error_logging;
 bool disable_script_error_logs;
-
-// Reads a script_object_type from an opcode argument, tolerating invalid values
-// (quests compiled before these arguments existed always serialized 0/none).
-static script_object_type get_object_type_from_sarg(int32_t arg)
-{
-	if (arg > 0 && arg <= (int)script_object_type::last)
-		return (script_object_type)arg;
-	return script_object_type::none;
-}
 
 // When j_instance is null, that means the interperter is fully in charge.
 // Otherwise, the JIT may still call this function for the many commands that are not compiled, or
@@ -10299,7 +10444,16 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 					scommand = 0xFFFF;
 					break;
 				}
-				ri->pc = (get_register(sarg1) / 10000) - 1;
+				// The compiler only jumps back to a pc it saved, but hand-written ZASM can jump
+				// anywhere, and the next command would be read from there.
+				int32_t target = (get_register(sarg1) / 10000) - 1;
+				if (target < 0 || (size_t)target >= zasm.size())
+				{
+					Z_scripterrlog("GOTOR attempted to jump to an invalid pc (%d).\n", target);
+					scommand = 0xFFFF;
+					break;
+				}
+				ri->pc = target;
 				increment = false;
 			}
 			break;
@@ -10531,7 +10685,15 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 					ri->pc = MAX_PC;
 					break; //handled below. 'RETURNFUNC' does this better now.
 				}
-				ri->pc = SH::read_stack(ri->sp) - 1;
+				// As with GOTOR, the return pc must be in the script.
+				int32_t target = SH::read_stack(ri->sp) - 1;
+				if (target < 0 || (size_t)target >= zasm.size())
+				{
+					Z_scripterrlog("RETURN attempted to jump to an invalid pc (%d).\n", target);
+					scommand = 0xFFFF;
+					break;
+				}
+				ri->pc = target;
 				++ri->sp;
 				increment = false;
 				break;
@@ -11048,8 +11210,7 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				FFCore.do_varg_choose();
 				break;
 			case MAKEVARGARRAY:
-				assert(sarg1 >= 0 && sarg1 <= (int)script_object_type::last);
-				FFCore.do_varg_makearray(type, i, (script_object_type)sarg1);
+				FFCore.do_varg_makearray(type, i, get_object_type_from_sarg(sarg1));
 				break;
 			
 			case PUSHVARGV:
@@ -12573,11 +12734,13 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				int32_t lyr = get_register(sarg1) / 10000;
 				int32_t pos = get_register(sarg2) / 10000;
 				rpos_t rpos = (rpos_t)pos;
-				if (BC::checkComboRpos(rpos) != SH::_NoError)
+				if (BC::checkLayer(lyr) != SH::_NoError || BC::checkComboRpos(rpos) != SH::_NoError)
 				{
+					set_register(sarg1, 0);
 					break;
 				}
 
+				TriggerLogCause log_cause([]{ return std::string("a script"); });
 				set_register(sarg1, do_trigger_combo(get_rpos_handle(rpos, lyr), 0) ? 10000 : 0);
 				break;
 			}
@@ -12587,9 +12750,13 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				int32_t pos = get_register(sarg2) / 10000;
 				int32_t idx = get_register(sarg3) / 10000;
 				rpos_t rpos = (rpos_t)pos;
-				if (BC::checkComboRpos(rpos) != SH::_NoError)
+				if (BC::checkLayer(lyr) != SH::_NoError || BC::checkComboRpos(rpos) != SH::_NoError)
+				{
+					set_register(sarg1, 0);
 					break;
+				}
 
+				TriggerLogCause log_cause([]{ return std::string("a script"); });
 				set_register(sarg1, do_trigger_combo(get_rpos_handle(rpos, lyr), idx) ? 10000 : 0);
 				break;
 			}
@@ -12597,6 +12764,7 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 			{
 				int32_t idx = get_register(sarg1) / 10000;
 				ffcdata* ffc = ResolveFFC(GET_REF(ffcref));
+				TriggerLogCause log_cause([]{ return std::string("a script"); });
 				if (ffc)
 					set_register(sarg1, do_trigger_combo(get_ffc_handle(ffc), idx) ? 10000 : 0);
 				else
@@ -12782,7 +12950,16 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				auto lwuid = SH::read_stack(ri->sp + 2);
 				auto lifttime = SH::read_stack(ri->sp + 1)/10000;
 				auto liftheight = zslongToFix(SH::read_stack(ri->sp + 0));
-				if(weapon* wpn = checkLWpn(lwuid))
+				weapon* wpn = checkLWpn(lwuid);
+				// Only an lweapon can be lifted: the hero holds it outside of every sprite list, and
+				// puts it in Lwpns when released. Any other weapon would stay in its own list too,
+				// and be freed from one list while still in the other.
+				if(wpn && wpn != Hero.lift_wpn && Lwpns.find(wpn) == -1)
+				{
+					scripting_log_error_with_context("Only an lweapon can be lifted");
+					wpn = nullptr;
+				}
+				if(wpn)
 				{
 					Hero.lift(wpn, lifttime, liftheight);
 					if(Lwpns.find(wpn) > -1)
@@ -13804,6 +13981,7 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 			}
 			case MARK_TYPE_VARG:
 			{
+				ZASM_CHECK(!ri->zs_vargs_stack.back().empty());
 				auto& vec = ri->zs_vargs_stack.back();
 				auto& obj_set = ri->zs_vargs_pos_is_object.back();
 				auto offset = vec.size()-1;
@@ -13843,7 +14021,7 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				if (sarg1 >= GD(0) && sarg1 < GD(MAX_GLOBAL_VARIABLES))
 				{
 					int index = sarg1-GD(0);
-					assert(game->global_d_types[index] != script_object_type::none);
+					ZASM_DCHECK(game->global_d_types[index] != script_object_type::none);
 					script_object_ref_inc(value);
 					script_object_ref_dec(game->global_d[index]);
 					game->global_d[index] = value;
@@ -13851,14 +14029,14 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 				else if (sarg1 >= SCRIPT_INST_VARS(0) && sarg1 < SCRIPT_INST_VARS(MAX_SCRIPT_INST_VARIABLES))
 				{
 					int index = sarg1-SCRIPT_INST_VARS(0);
-					assert(ri->script_d_is_object.contains(index));
+					ZASM_DCHECK(ri->script_d_is_object.contains(index));
 					script_object_ref_inc(value);
 					script_object_ref_dec(ri->script_d[index]);
 					ri->script_d[index] = value;
 				}
 				else if (zasm_array_supports(sarg1))
 				{
-					auto type = (script_object_type)sarg3;
+					auto type = get_object_type_from_sarg(sarg3);
 
 					int zasm_var = sarg1;
 					int index = GET_D(rINDEX) / 10000;
@@ -13866,7 +14044,7 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 					int ref = ref_arg ? get_ref(ref_arg) : 0;
 					zasm_array_set(zasm_var, ref, index, value, type);
 				}
-				else NOTREACHED();
+				else ZASM_NOTREACHED();
 				break;
 			}
 			case LOAD_INTERNAL_ARRAY:
@@ -13916,9 +14094,11 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 		{
 			if(earlyretval == RUNSCRIPT_SELFDELETE)
 			{
-				// The JIT uses instruction_could_return_not_ok to decide whether to check a command's
-				// return code. A self-deleting command that isn't registered there is silently
-				// ignored by the JIT (it diverges from the interpreter), so catch that here.
+				// The JIT runs a command in the interpreter, rather than as its own compiled code,
+				// only if instruction_could_return_not_ok says it can stop the script (see
+				// jit_instruction_runs_in_interpreter). A self-deleting command that isn't registered
+				// there would not stop a jitted script (it diverges from the interpreter), so catch
+				// that here.
 				CHECK(instruction_could_return_not_ok(ffscript(scommand, sarg1, sarg2, sarg3)));
 				earlyretval = -1;
 				return RUNSCRIPT_SELFDELETE;
@@ -13974,6 +14154,12 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 			break;
 		}
 	}
+	// The debugger evaluates a function call by running it here, as a run nested within (or on
+	// behalf of) a script. Whatever ended that run must not end the script too, which is what the
+	// rest of this function goes on to do. Only a quit is reported as one.
+	if (script_is_within_debugger_vm)
+		return hit_invalid_zasm ? RUNSCRIPT_ERROR : RUNSCRIPT_STOPPED;
+
 	if(script_funcrun) return RUNSCRIPT_OK;
 	
 	if(!scriptCanSave)
@@ -14046,43 +14232,30 @@ int32_t run_script_int(JittedScriptInstance* j_instance)
 	return RUNSCRIPT_OK;
 }
 
+// The script for an object destructor to run in. `script` and `i` can come from a save file, so
+// neither is trusted. Returns nullptr if there is no such script (or sprite).
 script_data* load_scrdata(ScriptType type, word script, int32_t i)
 {
+	sprite_list* sprites = nullptr;
 	switch(type)
 	{
-		case ScriptType::FFC:
-			return ffscripts[script];
-		case ScriptType::NPC:
-			return guyscripts[guys.getByUID(i)->scrconfig.script];
-		case ScriptType::Lwpn:
-			return lwpnscripts[Lwpns.getByUID(i)->scrconfig.script];
-		case ScriptType::Ewpn:
-			return ewpnscripts[Ewpns.getByUID(i)->scrconfig.script];
-		case ScriptType::ItemSprite:
-			return itemspritescripts[items.getByUID(i)->scrconfig.script];
-		case ScriptType::Item:
-			return itemscripts[script];
-		case ScriptType::Global:
-			return globalscripts[script];
-		case ScriptType::Generic:
-		case ScriptType::GenericFrozen:
-			return genericscripts[script];
-		case ScriptType::Hero:
-			return playerscripts[script];
-		case ScriptType::DMap:
-			return dmapscripts[script];
-		case ScriptType::OnMap:
-		case ScriptType::ScriptedActiveSubscreen:
-		case ScriptType::ScriptedPassiveSubscreen:
-			return dmapscripts[script];
-		case ScriptType::Screen:
-			return screenscripts[script];
-		case ScriptType::Combo:
-			return comboscripts[script];
-		case ScriptType::EngineSubscreen:
-			return subscreenscripts[script];
+		case ScriptType::NPC: sprites = &guys; break;
+		case ScriptType::Lwpn: sprites = &Lwpns; break;
+		case ScriptType::Ewpn: sprites = &Ewpns; break;
+		case ScriptType::ItemSprite: sprites = &items; break;
+		default: break;
 	}
-	return nullptr;
+
+	// For a sprite, the script is the one the sprite runs.
+	if (sprites)
+	{
+		sprite* spr = sprites->getByUID(i);
+		if (!spr)
+			return nullptr;
+		script = spr->scrconfig.script;
+	}
+
+	return get_script_safe(type, script);
 }
 
 //This keeps ffc scripts running beyond the first frame. 
@@ -14254,14 +14427,24 @@ int32_t FFScript::do_create_bitmap()
 
 uint32_t FFScript::create_user_bitmap_ex(int32_t w, int32_t h)
 {
+	if (!is_valid_bitmap_size(w, h))
+	{
+		scripting_log_error_with_context("Invalid bitmap size: {} x {}", w, h);
+		return 0;
+	}
+
 	auto bmp = user_bitmaps.create();
 	if (!bmp)
 		return 0;
 
-	bmp->width = w;
-	bmp->height = h;
-	bmp->u_bmp = create_bitmap_ex(8,w,h);
-	clear_bitmap(bmp->u_bmp);
+	bmp->u_bmp = create_script_bitmap(w, h);
+	// Null if it was too big to allocate, the same as a freed bitmap (see checkBitmap).
+	if (bmp->u_bmp)
+	{
+		clear_bitmap(bmp->u_bmp);
+		bmp->width = w;
+		bmp->height = h;
+	}
 	return bmp->id;
 }
 
@@ -14541,7 +14724,7 @@ int32_t FFScript::loadMapData()
 // Called when leaving a screen; deallocate arrays created by FFCs that aren't carried over
 void FFScript::deallocateArray(int32_t ptrval)
 {
-	CHECK(!ZScriptVersion::gc_arrays());
+	ZASM_CHECK(!ZScriptVersion::gc_arrays());
 
 	if(ptrval == 0)
 		return;
@@ -14976,7 +15159,11 @@ string get_filestr(const bool relative, bool is_file) //Used for 'FileSystem' fu
 		if (last != string::npos)
 			user_path = user_path.substr(0, last + 1);
 
-		return user_path;
+		if (auto r = parse_legacy_user_path(user_path); !r)
+		{
+			scripting_log_error_with_context("Error: {}", r.error());
+			return "";
+		} else return r.value();
 	}
 
 	if (auto r = parse_user_path(user_path, is_file); !r)
@@ -14995,7 +15182,9 @@ void FFScript::do_checkdir(const bool is_dir)
 void FFScript::do_fs_remove()
 {
 	string resolved_path = get_filestr(true, true);
-	set_register(sarg1, !resolved_path.empty() && remove(resolved_path.c_str()) ? 0 : 10000);
+	// An empty path is one that was refused. remove() returns 0 on success.
+	bool removed = !resolved_path.empty() && remove(resolved_path.c_str()) == 0;
+	set_register(sarg1, removed ? 10000 : 0);
 }
 
 static void warp_ex(int args[wexLast])
@@ -15803,10 +15992,9 @@ void FFScript::do_lweapon_delete()
 	if(auto s=checkLWpn(GET_REF(lwpnref)))
 	{
 		if(s==Hero.lift_wpn)
-		{
-			delete s;
-			Hero.lift_wpn = nullptr;
-		}
+			Hero.delete_liftwpn();
+		else if(s==Hero.lift_wpn_in_script)
+			Hero.delete_liftwpn_in_script();
 		else Lwpns.del(s);
 	}
 }
@@ -17038,7 +17226,7 @@ void FFScript::do_varg_makearray(ScriptType type, const uint32_t UID, script_obj
 	}
 
 	dword ptrval;
-	for(ptrval = 1; localRAM[ptrval].Valid(); ptrval++) ;
+	for(ptrval = 1; ptrval < NUM_ZSCRIPT_ARRAYS && localRAM[ptrval].Valid(); ptrval++) ;
 	
 	if(ptrval >= NUM_ZSCRIPT_ARRAYS)
 	{
@@ -17403,6 +17591,8 @@ int32_t FFScript::getHeroOTile(int32_t index1, int32_t index2)
 		herospritetype lst = (herospritetype)index1;
 		int32_t dir = index2;
 		int32_t the_ret = 0;
+		if (BC::checkBounds(dir, 0, 3, "direction") != SH::_NoError)
+			return 0;
 		switch(lst)
 		{
 		case LSprwalkspr: the_ret = walkspr[dir][0]; break;

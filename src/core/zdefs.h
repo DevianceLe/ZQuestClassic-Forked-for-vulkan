@@ -1,5 +1,4 @@
-#ifndef CORE_ZDEFS_H_
-#define CORE_ZDEFS_H_
+#pragma once
 
 #include "base/general.h"
 #include "base/lazy_default.h"
@@ -1849,7 +1848,7 @@ struct zquestheader
     byte  quest_number;
     byte  old_rules[2];
     byte  old_map_count;
-    char  old_str_count;
+    byte  old_str_count;
     byte  data_flags[ZQ_MAXDATA];
     byte  old_rules2[2];
     char  old_options;
@@ -2241,5 +2240,3 @@ enum
 #undef rad14
 #undef rad15
 #undef rad16
-
-#endif

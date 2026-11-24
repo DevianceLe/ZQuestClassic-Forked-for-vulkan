@@ -204,10 +204,26 @@ std::vector<AsciiParserTestCase> get_ascii_parser_test_cases()
 		TC{
 			"Negative command code is ignored and produces warning",
 			R"(Try me: \-2\10\20\)",
-			/*segments*/ {Invalid},
-			/*literals*/ {R"(Try me: \-2\10\20\)"},
+			/*segments*/ {Literal, Invalid},
+			/*literals*/ {R"(Try me: )", R"(\-2\10\20\)"},
 			/*commands*/ {},
 			/*warnings*/ {R"(Ignoring unknown command: \-2\10\20\)"}
+		},
+		TC{
+			"Command code too big to fit does not wrap around to a valid command",
+			R"(\257\1\2\)",
+			/*segments*/ {Invalid},
+			/*literals*/ {R"(\257\1\2\)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Ignoring unknown command: \257\1\2\)"}
+		},
+		TC{
+			"Negative command code does not wrap around to a valid command",
+			R"(\-255\1\2\)",
+			/*segments*/ {Invalid},
+			/*literals*/ {R"(\-255\1\2\)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Ignoring unknown command: \-255\1\2\)"}
 		},
 		TC{
 			"Negative arguments",
@@ -649,10 +665,50 @@ std::vector<AsciiParserTestCase> get_ascii_parser_test_cases()
 			/*warnings*/ {R"(Error: { and } characters must be escaped: \{ and \})"}
 		},
 		TC{
+			"Text after unescaped { and } is kept",
+			R"(Hello {world} bye)",
+			/*segments*/ {Literal, Invalid, Literal},
+			/*literals*/ {R"(Hello )", R"({world})", R"( bye)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Error: { and } characters must be escaped: \{ and \})"}
+		},
+		TC{
+			"Command after unescaped { and } is kept",
+			R"({a}\Speed\1\ b)",
+			/*segments*/ {Invalid, Command, Literal},
+			/*literals*/ {R"({a})", R"(b)"},
+			/*commands*/ {Cmd{MSGC_SPEED, 1, {1}}},
+			/*warnings*/ {R"(Error: { and } characters must be escaped: \{ and \})"}
+		},
+		TC{
+			"Escaped slash before the closing }",
+			R"({a\\}b)",
+			/*segments*/ {Invalid, Literal},
+			/*literals*/ {R"({a\\})", R"(b)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Error: { and } characters must be escaped: \{ and \})"}
+		},
+		TC{
+			"Escaped } inside unescaped { and }",
+			R"({a\}b}c)",
+			/*segments*/ {Invalid, Literal},
+			/*literals*/ {R"({a\}b})", R"(c)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Error: { and } characters must be escaped: \{ and \})"}
+		},
+		TC{
+			"Escaped { before an invalid command stays escaped",
+			R"(a\{b \2\1)",
+			/*segments*/ {Literal, Literal, Invalid},
+			/*literals*/ {R"(a)", R"({b )", R"(\2\1)"},
+			/*commands*/ {},
+			/*warnings*/ {R"(Expected slash (followed by either space or end of string) at end of command: \2\1)"}
+		},
+		TC{
 			"Error: { and } inside commands",
 			R"(Hello \Color\{world}\)",
-			/*segments*/ {Invalid},
-			/*literals*/ {R"(Hello \Color\{world}\)"},
+			/*segments*/ {Literal, Invalid},
+			/*literals*/ {R"(Hello )", R"(\Color\{world}\)"},
 			/*commands*/ {},
 			/*warnings*/ {R"(Ignoring unknown command: \Color\{world}\)"}
 		},
@@ -963,6 +1019,26 @@ std::vector<PasteSanitizeTestCase> get_paste_sanitize_test_cases()
 			"Hello\\\nworld",
 			R"(Hello\ \Newline\ world)"
 		},
+		TC{
+			"Escaped backslash before newline needs no separating space",
+			"Hello\\\\\nworld",
+			R"(Hello\\\Newline\ world)"
+		},
+		TC{
+			"Leading newline",
+			"\nHello",
+			R"(\Newline\ Hello)"
+		},
+		TC{
+			"Only a backslash before newline",
+			"\\\nworld",
+			R"(\ \Newline\ world)"
+		},
+		TC{
+			"Only an escaped backslash before newline",
+			"\\\\\nworld",
+			R"(\\\Newline\ world)"
+		},
 	};
 }
 
@@ -1123,7 +1199,26 @@ TestResults test_scc(bool verbose)
 		test_num++;
 	}
 
-	return TestResults{tests_failed, (int)(all_test_cases.size() + legacy_test_cases.size() + paste_test_cases.size())};
+	// A newline character is a command located at that character.
+	{
+		auto [parsed, warnings] = parse_ascii_msg_str("ab\ncd");
+		bool test_passed = parsed.commands.size() == 1 && parsed.commands[0].start == 2 && parsed.commands[0].length == 1;
+		if (!test_passed)
+		{
+			tests_failed++;
+			std::cerr << "--- Test " << std::setw(2) << test_num << ": Newline character source position ---\n";
+			std::cerr << RED << "  [FAIL] " << RESET << "Expected one command with start 2 and length 1.\n\n";
+		}
+		else if (verbose)
+		{
+			std::cerr << "--- Test " << std::setw(2) << test_num << ": Newline character source position ---\n";
+			std::cerr << GREEN << "  [PASS]" << RESET << "\n\n";
+		}
+
+		test_num++;
+	}
+
+	return TestResults{tests_failed, test_num - 1};
 }
 
 // TODO: make this not needed to compile...

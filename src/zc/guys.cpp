@@ -678,7 +678,7 @@ bool enemy::scr_walkflag(int32_t dx,int32_t dy,int32_t special, [[maybe_unused]]
 	if (!s1 || !s1->valid) s1 = s0;
 	if (!s2 || !s2->valid) s2 = s0;
 	
-	int32_t cpos = COMBOPOS(dx%256, dy%176);
+	int32_t cpos = COMBOPOS_IN_SCREEN(dx, dy);
 	int32_t ci = s0->data[cpos], ci1 = (s1?s1:s0)->data[cpos], ci2 = (s2?s2:s0)->data[cpos];
 	newcombo c = combobuf[ci];
 	newcombo c1 = combobuf[ci1];
@@ -1903,6 +1903,8 @@ void enemy::FireBreath(bool seekhero)
 	
 	int32_t i=Ewpns.Count()-1;
 	weapon *ew = (weapon*)(Ewpns.spr(i));
+	if (!ew)
+		return;
 	ew->moveflags &= ~move_can_pitfall; //No falling in pits
 	
 	if(!seekhero && (zc_oldrand()&4))
@@ -2023,6 +2025,14 @@ int enemy::summon_layered_enemies(int summon_count, int limit, bool random_count
 	return ret;
 }
 
+// The eweapon addEwpn just added. If it added none (an invalid weapon id, or the list is full),
+// this is still the last one in the list, which is what callers have always changed; or nullptr if
+// the list is empty.
+static weapon* last_ewpn()
+{
+	return (weapon*)Ewpns.spr(Ewpns.Count()-1);
+}
+
 void enemy::FireWeapon()
 {
 	/*
@@ -2062,28 +2072,27 @@ void enemy::FireWeapon()
 			yoff += (hit_height / 2) - 8;
 	}
 
-	// TODO(crash): check that .add succeeds.
 		
 	switch(dmisc1)
 	{
 	case e1t5SHOTS: //BS-Aquamentus
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(((dir^left)+5)<<3),wdp,dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(((dir^right)+5)<<3),wdp,dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 		
 		[[fallthrough]];
 	case e1t3SHOTSFAST:
 	case e1t3SHOTS: //Aquamentus
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(((dir^left)+1)<<3)+(dmisc1==e1t3SHOTSFAST ? 4:0),wdp,dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(((dir^right)+1)<<3)+(dmisc1==e1t3SHOTSFAST ? 4:0),wdp,dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 
 		[[fallthrough]];
 	default:
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(dmisc1==e1t3SHOTSFAST || dmisc1==e1tFAST ? 4:0),wdp,wpn==ewFireball2 || wpn==ewFireball ? 0:dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 		sfx(firesfx,pan(x));
 		break;
 		
@@ -2097,39 +2106,33 @@ void enemy::FireWeapon()
 			slant = right;
 			
 		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,2+(((dir^slant)+1)<<3),wdp,wpn==ewFireball2 || wpn==ewFireball ? 0:dir,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+		if (auto ew = last_ewpn()) ew->fakez = fakez;
 		sfx(firesfx,pan(x));
 		break;
 	}
 	
 	case e1t8SHOTS: //Fire Wizzrobe
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,l_up,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,l_down,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,r_up,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,r_down,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
+		for (int d : {l_up, l_down, r_up, r_down})
+		{
+			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,d,-1, getUID(),false));
+			if (auto ew = last_ewpn())
+			{
+				ew->fakez = fakez;
+				ew->moveflags &= ~move_can_pitfall; //No falling in pits
+			}
+		}
 
 		[[fallthrough]];
 	case e1t4SHOTS: //Stalfos 3
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,up,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,down,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,left,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,right,-1, getUID(),false));
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
+		for (int d : {up, down, left, right})
+		{
+			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,0,wdp,d,-1, getUID(),false));
+			if (auto ew = last_ewpn())
+			{
+				ew->fakez = fakez;
+				ew->moveflags &= ~move_can_pitfall; //No falling in pits
+			}
+		}
 		sfx(firesfx,pan(x));
 		break;
 		
@@ -3308,6 +3311,9 @@ int32_t enemy::defendNewInt(int32_t wpnId, int32_t *power, int32_t edef, byte un
 	unblockable = byte(ev[2]/10000);
 	wpnId = ev[3] / 10000;
 	bool nullify = ev[4]!=0;
+	// Negative values pick a defense type directly; others index the enemy's defenses.
+	if(edef >= edefLAST255)
+		nullify = true;
 	ev.clear();
 	int ret = 0;
 	if(!nullify)
@@ -10735,22 +10741,11 @@ bool eStalfos::animate(int32_t index)
 				}
 				
 				dummy_bool[0]=true;
-				addEwpn(x,y,z,wpn2,0,dmisc4,up, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,down, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,left, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,right, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,l_up, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,r_up, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,l_down, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				addEwpn(x,y,z,wpn2,0,dmisc4,r_down, getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
+				for (int d : {up, down, left, right, l_up, r_up, l_down, r_down})
+				{
+					addEwpn(x,y,z,wpn2,0,dmisc4,d, getUID(), 0, fakez);
+					if (auto ew = last_ewpn()) ew->moveflags &= ~move_can_pitfall; //No falling in pits
+				}
 				// A weapon other than the enemy's own, so it has its own sound.
 				sfx(firesfx_secondary,pan(x));
 			}
@@ -11107,7 +11102,7 @@ bool eStalfos::animate(int32_t index)
 		int32_t i=Ewpns.Count()-1;
 		weapon *ew = (weapon*)(Ewpns.spr(i));
 		
-		if(wpn==ewFIRETRAIL && sprite_data_buf.get(ewFIRETRAIL).frames>1)
+		if(ew && wpn==ewFIRETRAIL && sprite_data_buf.get(ewFIRETRAIL).frames>1)
 		{
 			ew->aframe=zc_oldrand()%sprite_data_buf.get(ewFIRETRAIL).frames;
 			if ( ew->do_animation ) ew->tile+=ew->aframe;
@@ -11179,7 +11174,7 @@ bool eStalfos::animate(int32_t index)
 				if(!fired&&(clk5>=38))
 				{
 					Ewpns.add(new weapon(x,y,z, wpn, 0, wdp, dir, -1,getUID(),false));
-					((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+					if (auto ew = last_ewpn()) ew->fakez = fakez;
 					sfx(firesfx,pan(x));
 					fired=true;
 				}
@@ -11984,22 +11979,11 @@ void eWizzrobe::wizzrobe_attack_for_real()
 	}
 	else if(dmisc2 == 1) // ring of fire
 	{
-		addEwpn(x,y,z,wpn,0,wdp,up,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,down,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,left,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,right,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,l_up,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,r_up,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,l_down,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-		addEwpn(x,y,z,wpn,0,wdp,r_down,getUID(), 0, fakez);
-		((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
+		for (int d : {up, down, left, right, l_up, r_up, l_down, r_down})
+		{
+			addEwpn(x,y,z,wpn,0,wdp,d,getUID(), 0, fakez);
+			if (auto ew = last_ewpn()) ew->moveflags &= ~move_can_pitfall; //No falling in pits
+		}
 		//this block of code was buggy and flat out doesn't match the default wpnsfx for these weapons.
 		//i've compromised by making all old quest use this code chunk by default.
 		if (quest_format[vGuys] < 51)
@@ -15895,7 +15879,7 @@ bool ePatra::animate(int32_t index)
 										int32_t m=Ewpns.Count()-1;
 										weapon *ew = (weapon*)(Ewpns.spr(m));
 										
-										ew->setAngle(zc::math::ArcTan2(double(HeroY()-y),double(HeroX()-x)));
+										if (ew) ew->setAngle(zc::math::ArcTan2(double(HeroY()-y),double(HeroX()-x)));
 										((esPatra*)guys.spr(i))->clk5 = 0;
 										clk5 = 0;
 										if (editorflags & ENEMY_FLAG6) clk4 = 16;
@@ -15908,7 +15892,7 @@ bool ePatra::animate(int32_t index)
 									int32_t m=Ewpns.Count()-1;
 									weapon *ew = (weapon*)(Ewpns.spr(m));
 									
-									ew->setAngle(zc::math::ArcTan2(double(HeroY()-y),double(HeroX()-x)));
+									if (ew) ew->setAngle(zc::math::ArcTan2(double(HeroY()-y),double(HeroX()-x)));
 								}
 								break;
 							}
@@ -16013,7 +15997,6 @@ void ePatra::FirePatraWeapon()
 			yoff += (hit_height / 2) - 8;
 	}
 	sfx(firesfx,pan(x));
-	// TODO(crash): check that .add succeeds.
 	switch (dmisc28)
 	{
 		case patrat8SHOT: //Fire Wizzrobe
@@ -16021,73 +16004,67 @@ void ePatra::FirePatraWeapon()
 		case patrat4SHOTRAND:
 			if (dmisc28 != patrat4SHOTRAND || (zc_oldrand()%2)) //if it's the 4 shot rand type, only let it through half the time. Break is within so it doesn't do both, but if it skips this one it'll always do the other one.
 			{
-				Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,l_up,-1, getUID(),false));
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				if (wpn != ewFlame && wpn != ewFlame2)  ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= .707; //Fire already does this internall for asome bizarre reason.
-				
-				Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,l_down,-1, getUID(),false));
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				if (wpn != ewFlame && wpn != ewFlame2)  ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= .707; //Fire already does this internall for asome bizarre reason.
-				
-				Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,r_up,-1, getUID(),false));
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				if (wpn != ewFlame && wpn != ewFlame2)  ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= .707; //Fire already does this internall for asome bizarre reason.
-				
-				Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,r_down,-1, getUID(),false));
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-				if (wpn != ewFlame && wpn != ewFlame2)  ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= .707; //Fire already does this internall for asome bizarre reason.
+				for (int d : {l_up, l_down, r_up, r_down})
+				{
+					Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,d,-1, getUID(),false));
+					if (auto ew = last_ewpn())
+					{
+						ew->fakez = fakez;
+						ew->moveflags &= ~move_can_pitfall; //No falling in pits
+						if (wpn != ewFlame && wpn != ewFlame2) ew->step *= .707; //Fire already does this internall for asome bizarre reason.
+					}
+				}
 				
 				if (dmisc28 == patrat4SHOTDIAG || dmisc28 == patrat4SHOTRAND) break;
 			}	
 			
 			[[fallthrough]];
 		case patrat4SHOTCARD: //Stalfos 3
-			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,up,-1, getUID(),false));
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,down,-1, getUID(),false));
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,left,-1, getUID(),false));
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-			Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,right,-1, getUID(),false));
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
-			((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->moveflags &= ~move_can_pitfall; //No falling in pits
-			break;
-		
-		default:
-			addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
-			if (dmisc28 == patratBREATH) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle += (zc_rand(20,-20)/100.0)*PI;
-			double anglestore = ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle;
-			if (dmisc28 == patrat1SHOTFAST || dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOTFAST) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= 2;
-			if (dmisc28 == patrat3SHOT || dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOT || dmisc28 == patrat5SHOTFAST)
+			for (int d : {up, down, left, right})
 			{
-				addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle = anglestore + (double)0.46364761;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step += 0.1180;
-				if (dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOTFAST) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= 2;
-				addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle = anglestore - (double)0.46364761;
-				((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step += 0.1180;
-				if (dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOTFAST) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= 2;
-				if (dmisc28 == patrat5SHOT || dmisc28 == patrat5SHOTFAST)
+				Ewpns.add(new weapon(x+xoff,y+yoff,z,wpn,1,wdp,d,-1, getUID(),false));
+				if (auto ew = last_ewpn())
 				{
-					addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
-					((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle = anglestore + (double)0.78539816;
-					((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step += 0.4142;
-					if (dmisc28 == patrat5SHOTFAST) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= 2;
-					addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
-					((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->angle = anglestore - (double)0.78539816;
-					((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step += 0.4142;
-					if (dmisc28 == patrat5SHOTFAST) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->step *= 2;
+					ew->fakez = fakez;
+					ew->moveflags &= ~move_can_pitfall; //No falling in pits
 				}
 			}
 			break;
+		
+		default:
+		{
+			bool fast1 = dmisc28 == patrat1SHOTFAST || dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOTFAST;
+			bool fast3 = dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOTFAST;
+			bool fast5 = dmisc28 == patrat5SHOTFAST;
+			addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
+			double anglestore = 0;
+			if (auto ew = last_ewpn())
+			{
+				if (dmisc28 == patratBREATH) ew->angle += (zc_rand(20,-20)/100.0)*PI;
+				anglestore = ew->angle;
+				if (fast1) ew->step *= 2;
+			}
+			auto fire_spread = [&](double angle_offset, double step_offset, bool fast) {
+				addEwpn(x,y,z,wpn,3,wdp,dir,getUID(), 0, fakez);
+				if (auto ew = last_ewpn())
+				{
+					ew->angle = anglestore + angle_offset;
+					ew->step += step_offset;
+					if (fast) ew->step *= 2;
+				}
+			};
+			if (dmisc28 == patrat3SHOT || dmisc28 == patrat3SHOTFAST || dmisc28 == patrat5SHOT || dmisc28 == patrat5SHOTFAST)
+			{
+				fire_spread(0.46364761, 0.1180, fast3);
+				fire_spread(-0.46364761, 0.1180, fast3);
+				if (dmisc28 == patrat5SHOT || dmisc28 == patrat5SHOTFAST)
+				{
+					fire_spread(0.78539816, 0.4142, fast5);
+					fire_spread(-0.78539816, 0.4142, fast5);
+				}
+			}
+			break;
+		}
 			
 	}
 	sfx(firesfx,pan(x));
@@ -16675,7 +16652,9 @@ void addEwpn(int32_t x,int32_t y,int32_t z,int32_t id,int32_t type,int32_t power
 {
 	if(id>wEnemyWeapons || (id >= wScript1 && id <= wScript10))
 		Ewpns.add(new weapon((zfix)x,(zfix)y,(zfix)z,id,type,power,dir, -1, parentid, script_generated));
-	if (fakez > 0) ((weapon*)(Ewpns.spr(Ewpns.Count()-1)))->fakez = fakez;
+	if (fakez > 0)
+		if (auto ew = last_ewpn())
+			ew->fakez = fakez;
 }
 
 int32_t hit_enemy(int32_t index, int32_t wpnId,int32_t power,int32_t wpnx,int32_t wpny,int32_t dir, int32_t parent_item, weapon* realweap)
@@ -16940,7 +16919,7 @@ int32_t addchild(int32_t screen, int32_t x,int32_t y,int32_t id,int32_t clk, spr
 
 int32_t addchild_z(int32_t screen, int32_t x,int32_t y,int32_t z,int32_t id,int32_t clk, sprite* parent)
 {
-	if(id <= 0) return 0;
+	if(id <= 0 || (id&0xFFF) >= MAXGUYS) return 0;
 	
 	int32_t ret = 0;
 	sprite *e=NULL;
@@ -19619,10 +19598,11 @@ void setupscreen()
 		int32_t step  = 5;
 		
 		moneysign();
+		infotype const& info = QMisc.get_info(base_scr->catchall);
 		
 		for(int32_t i=0; i<3; i++)
 		{
-			if(QMisc.info[base_scr->catchall].str[i])
+			if(info.str[i])
 			{
 				++count;
 			}
@@ -19646,7 +19626,7 @@ void setupscreen()
 			{
 				additem((i << step)+base, 89, iRupy, ipMONEY + ipDUMMY);
 				((item*)items.spr(items.Count()-1))->PriceIndex = i;
-				prices[i] = -(QMisc.info[base_scr->catchall].price[i]);
+				prices[i] = -(info.price[i]);
 				if(prices[i]==0)
 					prices[i]=100000; // So putprices() knows there's an item here and positions the price correctly
 				int32_t itemid = current_item_id(itype_wealthmedal);
@@ -19663,7 +19643,7 @@ void setupscreen()
 						prices[i]=100000;
 				}
 				
-				if((QMisc.info[base_scr->catchall].price[i])>1 && prices[i]>-1 && prices[i]!=100000)
+				if((info.price[i])>1 && prices[i]>-1 && prices[i]!=100000)
 					prices[i]=-1;
 			}
 		}
@@ -19725,11 +19705,12 @@ void setupscreen()
 		
 		if(base_scr->room != rTAKEONE)
 			moneysign();
+		shoptype const& shop = QMisc.get_shop(base_scr->catchall);
 			
 		//count and align the stuff
 		for(int32_t i=0; i<3; ++i)
 		{
-			if(QMisc.shop[base_scr->catchall].hasitem[count] != 0)
+			if(shop.hasitem[count] != 0)
 			{
 				++count;
 			}
@@ -19751,12 +19732,12 @@ void setupscreen()
 		
 		for(int32_t i=0; i<count; i++)
 		{
-			additem(dx+(i<<step)+base, dy+89, QMisc.shop[base_scr->catchall].item[i], ipHOLDUP+ipFADE+(base_scr->room == rTAKEONE ? ipONETIME2 : ipCHECK));
+			additem(dx+(i<<step)+base, dy+89, shop.item[i], ipHOLDUP+ipFADE+(base_scr->room == rTAKEONE ? ipONETIME2 : ipCHECK));
 			((item*)items.spr(items.Count()-1))->PriceIndex = i;
 			
 			if(base_scr->room != rTAKEONE)
 			{
-				prices[i] = QMisc.shop[base_scr->catchall].price[i];
+				prices[i] = shop.price[i];
 				if(prices[i]==0)
 					prices[i]=100000; // So putprices() knows there's an item here and positions the price correctly
 				int32_t itemid = current_item_id(itype_wealthmedal);
@@ -19773,7 +19754,7 @@ void setupscreen()
 						prices[i]=100000;
 				}
 				
-				if((QMisc.shop[base_scr->catchall].price[i])>1 && prices[i]<1)
+				if((shop.price[i])>1 && prices[i]<1)
 					prices[i]=1;
 			}
 		}
@@ -19787,7 +19768,7 @@ void setupscreen()
 		int32_t step  = 5;
 		
 		moneysign();
-		bottleshoptype const& bst = QMisc.bottle_shop_types[base_scr->catchall];
+		bottleshoptype const& bst = QMisc.get_bottle_shop(base_scr->catchall);
 		//count and align the stuff
 		for(int32_t i=0; i<3; ++i)
 		{

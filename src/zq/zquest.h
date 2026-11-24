@@ -1,5 +1,4 @@
-#ifndef ZQUEST_H_
-#define ZQUEST_H_
+#pragma once
 
 #include <string>
 #include <vector>
@@ -381,6 +380,8 @@ void drawpanel(int32_t panel);
 void refresh(int32_t flags, bool update = false);
 void select_scr();
 void select_combo(int32_t list);
+// Makes a combo the one being drawn with, and scrolls the combo list to it.
+void select_combo_for_drawing(int32_t cid, int32_t cs);
 void update_combobrush();
 void change_autocombo_height(int32_t change);
 void draw(bool);
@@ -610,7 +611,5 @@ void questminrev_help();
 //throw together midi_strict hack
 #ifdef ALLEGRO_LINUX_GP2X
 extern int32_t midi_strict;
-#endif
-
 #endif
 /* end */

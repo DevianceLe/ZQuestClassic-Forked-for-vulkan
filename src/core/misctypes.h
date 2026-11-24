@@ -1,5 +1,4 @@
-#ifndef CORE_MISCTYPES_H_
-#define CORE_MISCTYPES_H_
+#pragma once
 
 #include <array>
 
@@ -200,11 +199,27 @@ struct miscQdata
 	byte savemenu_game_over, savemenu_f6;
 	
 	word miscsfx[sfxMAX];
+
+	// A room's catchall picks which of these it uses, and can hold any value (from a damaged quest,
+	// or a script setting Screen->Catchall), so look them up through these: an id past the end
+	// gets an empty one.
+	shoptype const& get_shop(int id) const
+	{
+		static const shoptype none{};
+		return unsigned(id) < NUM_SHOPS ? shop[id] : none;
+	}
+	infotype const& get_info(int id) const
+	{
+		static const infotype none{};
+		return unsigned(id) < NUM_INFOS ? info[id] : none;
+	}
+	bottleshoptype const& get_bottle_shop(int id) const
+	{
+		static const bottleshoptype none{};
+		return unsigned(id) < NUM_BOTTLE_SHOPS ? bottle_shop_types[id] : none;
+	}
 };
 
 extern std::array<DoorComboSet, MAXDOORCOMBOSETS> DoorComboSets;
 extern std::array<std::string, MAXDOORCOMBOSETS> DoorComboSetNames;
 extern miscQdata QMisc;
-
-#endif
-

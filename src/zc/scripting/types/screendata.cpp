@@ -7,6 +7,7 @@
 #include "zc/rendertarget.h"
 #include "zc/scripting/arrays.h"
 #include "zc/scripting/types/musicdata.h"
+#include "zc/scripting/zasm_check.h"
 #include "zc/zc_sys.h"
 #include "zc/zscriptversion.h"
 #include "zc/scripting/script_object.h"
@@ -54,7 +55,10 @@ int32_t screendata_get_register(int32_t reg)
 	#define GET_SCREENDATA_BYTE_INDEX(member, indexbound) \
 	{ \
 		int32_t indx = GET_D(rINDEX) / 10000; \
-		ret = (scr->member[indx] *10000); \
+		if (BC::checkIndex(indx, 0, indexbound) != SH::_NoError) \
+			ret = -10000; \
+		else \
+			ret = (scr->member[indx] *10000); \
 	} \
 
 	//byte
@@ -204,7 +208,7 @@ int32_t screendata_get_register(int32_t reg)
 		{
 			ret = 0;
 			int mi = mapind(cur_map, GET_REF(screenref));
-			if(mi < 0) break;
+			if(unsigned(mi) >= MAXSCRSNORMAL) break;
 			int dir = SH::read_stack(ri->sp+1) / 10000;
 			int ind = SH::read_stack(ri->sp+0) / 10000;
 			if(unsigned(dir) > 3)
@@ -236,7 +240,7 @@ int32_t screendata_get_register(int32_t reg)
 		case SCREENDATAGUYCOUNT:
 		{
 			int mi = mapind(cur_map, GET_REF(screenref));
-			if(mi < 0)
+			if(unsigned(mi) >= MAXSCRSNORMAL)
 				ret = -10000;
 			else ret = game->guys.get(mi) * 10000;
 			break;
@@ -335,7 +339,7 @@ int32_t screendata_get_register(int32_t reg)
 		
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -373,24 +377,8 @@ void screendata_set_register(int32_t reg, int32_t value)
 	#define SET_SCREENDATA_BYTE_INDEX(member, str, indexbound) \
 	{ \
 		int32_t indx = GET_D(rINDEX) / 10000; \
-		scr->member[indx] = vbound((value / 10000),0,255); \
-	}
-
-	///max screen id is higher! vbound properly... -Z
-	#define SET_SCREENDATA_LAYERSCREEN_INDEX(member, str, indexbound) \
-	{ \
-		int32_t indx = GET_D(rINDEX) / 10000; \
-		int32_t scrn_id = value/10000; \
-		if ( quest_format[vFFScript] < 11 ) ++indx; \
-		if (BC::checkIndex(indx, 1, indexbound) != SH::_NoError) \
-		{ \
-		} \
-		else if ( scrn_id > MAPSCRS ) \
-		{ \
-			Z_scripterrlog("Script attempted to use a mapdata->LayerScreen[%d].\n",scrn_id); \
-			Z_scripterrlog("Valid Screen values are (0) through (%d).\n",MAPSCRS); \
-		} \
-		else scr->member[indx-1] = vbound((scrn_id),0,MAPSCRS); \
+		if (BC::checkIndex(indx, 0, indexbound) == SH::_NoError) \
+			scr->member[indx] = vbound((value / 10000),0,255); \
 	}
 
 	#define SET_SCREENDATA_FLAG(member, str) \
@@ -402,18 +390,6 @@ void screendata_set_register(int32_t reg, int32_t value)
 		} \
 		else scr->.member|= ~flag; \
 	} \
-
-	#define SET_SCREENDATA_BOOL_INDEX(member, str, indexbound) \
-	{ \
-		int32_t indx = GET_D(rINDEX) / 10000; \
-		if(indx < 0 || indx > indexbound ) \
-		{ \
-			Z_scripterrlog("Invalid Index passed to Screen->%s[]: %d\n", (indx), str); \
-			break; \
-		} \
-		scr->member[indx] =( (value/10000) ? 1 : 0 ); \
-	}
-
 
 	switch (reg)
 	{
@@ -469,7 +445,7 @@ void screendata_set_register(int32_t reg, int32_t value)
 		case SCREENDATAEXDOOR:
 		{
 			int mi = mapind(cur_map, GET_REF(screenref));
-			if(mi < 0) break;
+			if(unsigned(mi) >= MAXSCRSNORMAL) break;
 			int dir = SH::read_stack(ri->sp+1) / 10000;
 			int ind = SH::read_stack(ri->sp+0) / 10000;
 			if(unsigned(dir) > 3)
@@ -496,7 +472,7 @@ void screendata_set_register(int32_t reg, int32_t value)
 		case SCREENDATAGUYCOUNT:
 		{
 			int mi = mapind(cur_map, GET_REF(screenref));
-			if(mi > -1)
+			if(unsigned(mi) < MAXSCRSNORMAL)
 				game->guys[mi] = vbound(value/10000,10,0);
 			break;
 		}
@@ -601,13 +577,21 @@ void screendata_set_register(int32_t reg, int32_t value)
 			break;
 		}
 		case UNDERCOMBO:
-			scr->undercombo=value/10000;
+		{
+			int cid = value/10000;
+			if (unsigned(cid) >= MAXCOMBOS)
+			{
+				scripting_log_error_with_context("Invalid combo: {}", cid);
+				break;
+			}
+			scr->undercombo = cid;
 			break;
+		}
 		case UNDERCSET:
 			scr->undercset=value/10000;
 			break;
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 }
 
@@ -724,7 +708,7 @@ static ArrayRegistrar COMBOTD_registrar(COMBOTD, []{
 	);
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::validate<256>);
+	impl.setValueTransform(transforms::validate<cMAX>);
 	return &impl;
 }());
 
@@ -968,8 +952,12 @@ static ArrayRegistrar SCREENDATALAYERMAP_registrar(SCREENDATALAYERMAP, []{
 		[](int ref, int index, int value){
 			if (auto scr = checkScreen(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
+				// Loading the screen reads the layer from this map.
+				if (value > map_count)
+				{
+					scripting_log_error_with_context("Invalid map: {} - there are {} maps", value, map_count);
+					return false;
+				}
 
 				scr->layermap[index - 1] = value;
 				mark_current_region_handles_dirty();
@@ -979,6 +967,7 @@ static ArrayRegistrar SCREENDATALAYERMAP_registrar(SCREENDATALAYERMAP, []{
 			return false;
 		}
 	);
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::vboundByte);
@@ -1001,9 +990,6 @@ static ArrayRegistrar SCREENDATALAYERSCREEN_registrar(SCREENDATALAYERSCREEN, []{
 		[](int ref, int index, int value){
 			if (auto scr = checkScreen(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				scr->layerscreen[index - 1] = value;
 				mark_current_region_handles_dirty();
 				return true;
@@ -1012,6 +998,7 @@ static ArrayRegistrar SCREENDATALAYERSCREEN_registrar(SCREENDATALAYERSCREEN, []{
 			return false;
 		}
 	);
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::validate<MAPSCRS>);
@@ -1034,9 +1021,6 @@ static ArrayRegistrar SCREENDATALAYEROPACITY_registrar(SCREENDATALAYEROPACITY, [
 		[](int ref, int index, int value){
 			if (auto scr = checkScreen(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				scr->layeropacity[index - 1] = value;
 				return true;
 			}
@@ -1044,6 +1028,7 @@ static ArrayRegistrar SCREENDATALAYEROPACITY_registrar(SCREENDATALAYEROPACITY, [
 			return false;
 		}
 	);
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::vboundByte);
@@ -1067,14 +1052,14 @@ static ArrayRegistrar SCREENDATASIDEWARPSC_registrar(SCREENDATASIDEWARPSC, []{
 static ArrayRegistrar SCREENDATASIDEWARPDMAP_registrar(SCREENDATASIDEWARPDMAP, []{
 	static ScriptingArray_ObjectMemberCArray<screendata, &screendata::sidewarpdmap> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXDMAPS>);
 	return &impl;
 }());
 
 static ArrayRegistrar SCREENDATASECRETCOMBO_registrar(SCREENDATASECRETCOMBO, []{
 	static ScriptingArray_ObjectMemberCArray<screendata, &screendata::secretcombo> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXCOMBOS>);
 	return &impl;
 }());
 
@@ -1130,7 +1115,7 @@ static ArrayRegistrar SCREENDATAWARPRETY_registrar(SCREENDATAWARPRETY, []{
 static ArrayRegistrar SCREENDATATILEWARPDMAP_registrar(SCREENDATATILEWARPDMAP, []{
 	static ScriptingArray_ObjectMemberCArray<screendata, &screendata::tilewarpdmap> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXDMAPS>);
 	return &impl;
 }());
 

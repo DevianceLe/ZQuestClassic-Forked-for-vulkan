@@ -1,5 +1,4 @@
-#ifndef ZCGUI_PROPS_H_
-#define ZCGUI_PROPS_H_
+#pragma once
 
 namespace GUI::Props
 {
@@ -95,6 +94,7 @@ ZCGUI_DECLARE_PROPERTY(onRClick)
 ZCGUI_DECLARE_PROPERTY(onDClick)
 ZCGUI_DECLARE_PROPERTY(selectedIndex)
 ZCGUI_DECLARE_PROPERTY(isABC)
+ZCGUI_DECLARE_PROPERTY(multiSelect)
 ZCGUI_DECLARE_PROPERTY(cset)
 ZCGUI_DECLARE_PROPERTY(tile)
 ZCGUI_DECLARE_PROPERTY(use_vsync)
@@ -273,5 +273,3 @@ inline void applyArgs(ArgsSoFar, BuilderType&& builder, ArgType&&... args)
 #endif
 
 } // namespace GUI::Internal
-
-#endif

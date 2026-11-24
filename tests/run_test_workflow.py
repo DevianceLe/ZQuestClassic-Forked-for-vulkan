@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 
 from argparse import ArgumentTypeError
@@ -14,15 +15,13 @@ from time import sleep
 
 import intervaltree
 
-from github import Github, GithubException, PaginatedList, WorkflowRun
 from replays import ReplayTestResults
-from workflow_job import WorkflowJob
 
 script_dir = Path(os.path.dirname(os.path.realpath(__file__)))
 root_dir = script_dir.parent
 
 os.sys.path.append(str((root_dir / 'scripts').absolute()))
-from github_helpers import extract_tars, get_gha_artifacts
+from github_helpers import GitHub, GitHubError, extract_tars, get_gha_artifacts
 
 
 def arg_path(path):
@@ -48,45 +47,48 @@ def is_baseline_branch(branch: str) -> bool:
 # The branch whose passing CI runs should serve as the baseline for a failing
 # CI run: a PR uses its base branch, a push to main or a release branch is its
 # own baseline, and anything else falls back to main.
-def find_baseline_branch_for_run(gh: Github, repo_str: str, run_id: int) -> str:
-    repo = gh.get_repo(repo_str)
-    run = repo.get_workflow_run(run_id)
+def find_baseline_branch_for_run(gh: GitHub, repo_str: str, run_id: int) -> str:
+    run = get_workflow_run(gh, repo_str, run_id)
 
     # Checked before the branch name: a PR from a fork's main or release branch
     # has that as its head branch, regardless of what the PR targets.
-    if run.event in ('pull_request', 'pull_request_target'):
-        for pull in find_pulls_for_run(repo, run):
-            if is_baseline_branch(pull.base.ref):
-                return pull.base.ref
-    elif is_baseline_branch(run.head_branch):
-        return run.head_branch
+    if run['event'] in ('pull_request', 'pull_request_target'):
+        for pull in find_pulls_for_run(gh, repo_str, run):
+            if is_baseline_branch(pull['base']['ref']):
+                return pull['base']['ref']
+    elif is_baseline_branch(run['head_branch']):
+        return run['head_branch']
 
-    print(f'no baseline branch found for run {run_id} ({run.head_branch}), using main')
+    print(
+        f'no baseline branch found for run {run_id} ({run["head_branch"]}), using main'
+    )
     return 'main'
 
 
 # The PRs a pull_request workflow run was for, best match first.
-def find_pulls_for_run(repo, run: WorkflowRun.WorkflowRun) -> list:
+def find_pulls_for_run(gh: GitHub, repo_str: str, run: dict) -> list:
     # Same-repo PRs are listed on the run.
-    pulls = list(run.pull_requests)
+    pulls = run['pull_requests']
     if pulls:
         return pulls
 
     # PRs from forks are not, and GitHub doesn't associate a fork's commits
     # with the PRs they belong to either. So find them by the fork's owner and
     # branch name.
-    if not run.head_repository:
+    if not run['head_repository']:
         return []
-    head = f'{run.head_repository.owner.login}:{run.head_branch}'
+    head = f'{run["head_repository"]["owner"]["login"]}:{run["head_branch"]}'
     try:
-        pulls = list(repo.get_pulls(state='all', head=head))
-    except GithubException as e:
+        pulls = list(gh.paginate(f'repos/{repo_str}/pulls', state='all', head=head))
+    except GitHubError as e:
         print(f'could not look up PRs for {head}: {e}')
         return []
 
     # A fork's branch name may have been reused for several PRs over time.
     # Prefer the one whose head is this exact commit, then any open one.
-    pulls.sort(key=lambda p: (p.head.sha != run.head_sha, p.state != 'open'))
+    pulls.sort(
+        key=lambda p: (p['head']['sha'] != run['head_sha'], p['state'] != 'open')
+    )
     return pulls
 
 
@@ -101,31 +103,36 @@ def default_baseline_branch() -> str:
     return branch if is_baseline_branch(branch) else 'main'
 
 
-def find_baseline(gh: Github, repo_str: str, branch: str = 'main'):
-    def is_passing_workflow_run(r: WorkflowRun.WorkflowRun):
-        if r.conclusion == 'success':
+def get_workflow_run(gh: GitHub, repo_str: str, run_id: int):
+    return gh.get(f'repos/{repo_str}/actions/runs/{run_id}')
+
+
+# Newest first.
+def get_workflow_runs(gh: GitHub, repo_str: str, workflow: str, branch: str):
+    return gh.paginate(
+        f'repos/{repo_str}/actions/workflows/{workflow}/runs',
+        list_item='workflow_runs',
+        branch=branch,
+    )
+
+
+def find_baseline(gh: GitHub, repo_str: str, branch: str = 'main'):
+    def is_passing_workflow_run(r: dict):
+        if r['conclusion'] == 'success':
             return True
 
-        # TODO: remove when https://github.com/PyGithub/PyGithub/pull/1951 is released.
-        jobs = PaginatedList.PaginatedList(
-            WorkflowJob,
-            r._requester,
-            r.jobs_url,
-            dict(),
-            list_item='jobs',
-        )
-
+        jobs = gh.paginate(r['jobs_url'], list_item='jobs')
         ignore_jobs = ['web', 'compare']
         if all(
-            job.conclusion == 'success' for job in jobs if job.name not in ignore_jobs
+            job['conclusion'] == 'success'
+            for job in jobs
+            if job['name'] not in ignore_jobs
         ):
             return True
 
         return False
 
-    repo = gh.get_repo(repo_str)
-    ci_workflow = repo.get_workflow('ci.yml')
-    branch_runs = ci_workflow.get_runs(branch=branch)
+    branch_runs = get_workflow_runs(gh, repo_str, 'ci.yml', branch)
     most_recent_ok = next(
         (r for r in branch_runs if is_passing_workflow_run(r)),
         None,
@@ -136,12 +143,12 @@ def find_baseline(gh: Github, repo_str: str, branch: str = 'main'):
         )
 
     return create_compare_git_ref(
-        gh, repo_str, most_recent_ok.head_sha, fallback_branch=branch
+        gh, repo_str, most_recent_ok['head_sha'], fallback_branch=branch
     )
 
 
 def create_compare_git_ref(
-    gh: Github, repo_str: str, sha: str, fallback_branch: str = 'main'
+    gh: GitHub, repo_str: str, sha: str, fallback_branch: str = 'main'
 ):
     # GitHub currently does not support dispatching a workflow run for a specific commit (even if it is on the main branch...)
     # But! It can do refs. So let's make a dummy branch. ugh.
@@ -149,25 +156,24 @@ def create_compare_git_ref(
     # - https://docs.github.com/en/rest/actions/workflows?apiVersion=2022-11-28#create-a-workflow-dispatch-event
     # - https://github.com/benc-uk/workflow-dispatch/issues/15
     print(f'\nusing baseline sha: {sha}')
-    repo = gh.get_repo(repo_str)
     dummy_branch = f'compare-baseline-{sha[:8]}'
     ref = f'refs/heads/{dummy_branch}'
     try:
-        repo.create_git_ref(ref, sha)
-    except GithubException as e:
+        gh.post(f'repos/{repo_str}/git/refs', {'ref': ref, 'sha': sha})
+    except GitHubError as e:
         # This error happens when running from fork, since lack write permissions.
-        if e.data['message'] == 'Resource not accessible by integration':
+        if e.data.get('message') == 'Resource not accessible by integration':
             print(e)
             print(f'assuming baseline is head of {fallback_branch} branch ...')
             return fallback_branch
-        if e.data['message'] != 'Reference already exists':
+        if e.data.get('message') != 'Reference already exists':
             raise e
 
     return dummy_branch
 
 
 def start_test_workflow_run(
-    gh: Github,
+    gh: GitHub,
     repo_str: str,
     branch: str,
     runs_on: str,
@@ -175,67 +181,96 @@ def start_test_workflow_run(
     compiler: str,
     extra_args: list[str],
 ):
-    repo = gh.get_repo(repo_str)
-    test_workflow = repo.get_workflow('test.yml')
-
-    existing_run_ids = [w.id for w in test_workflow.get_runs(branch=branch)]
+    existing_run_ids = [
+        w['id'] for w in get_workflow_runs(gh, repo_str, 'test.yml', branch)
+    ]
     inputs = {
         'runs-on': runs_on,
         'arch': arch,
         'compiler': compiler,
-        'extra-args': ' '.join(f'"{x}"' if ' ' in x else x for x in extra_args),
+        # ci.py splits this back up with shlex.
+        'extra-args': shlex.join(extra_args),
     }
     print(f'starting run with inputs: {inputs}')
     for key, value in inputs.items():
         print(f'{key}: {value}')
 
-    workflow_run_started = test_workflow.create_dispatch(branch, inputs)
-    if not workflow_run_started:
-        print('failed to start workflow run')
+    try:
+        gh.post(
+            f'repos/{repo_str}/actions/workflows/test.yml/dispatches',
+            {'ref': branch, 'inputs': inputs},
+        )
+    except GitHubError as e:
+        print(f'failed to start workflow run: {e}')
         return
 
     while True:
-        for w in test_workflow.get_runs(branch=branch):
+        for w in get_workflow_runs(gh, repo_str, 'test.yml', branch):
             # TODO this is just a good guess. should do https://stackoverflow.com/a/69500478/2788187
-            if w.id not in existing_run_ids:
-                print(f'run started: {w.id}')
-                return w.id
+            if w['id'] not in existing_run_ids:
+                print(f'run started: {w["id"]}')
+                return w['id']
 
         print('waiting for run to start')
         sleep(5)
 
 
-def poll_workflow_run(gh: Github, repo_str: str, run_id: int):
-    repo = gh.get_repo(repo_str)
-
+def poll_workflow_run(gh: GitHub, repo_str: str, run_id: int):
     retries_left = 2
     while True:
-        w = repo.get_workflow_run(run_id)
-        if w.conclusion == None:
+        w = get_workflow_run(gh, repo_str, run_id)
+        if w['conclusion'] == None:
             print('waiting for run to finish')
             sleep(20)
             continue
 
-        print(f'[{run_id}] run finished: {w.conclusion}')
+        print(f'[{run_id}] run finished: {w["conclusion"]}')
 
-        if w.conclusion != 'success':
+        if w['conclusion'] != 'success':
             if retries_left == 0:
                 raise Exception('failed to run workflow too many times')
 
             print('re-running workflow')
             retries_left -= 1
-            if not w.rerun():
-                raise Exception('failed to re-run workflow')
+            gh.post(f'repos/{repo_str}/actions/runs/{run_id}/rerun')
+            # The run keeps its old conclusion for a moment after the rerun is
+            # requested, which would otherwise count as another failure.
+            while get_workflow_run(gh, repo_str, run_id)['status'] == 'completed':
+                sleep(5)
 
             continue
 
         break
 
 
+# True if `name` has the form of a test suite replay's name: a relative path
+# to a .zplay file with forward slashes, such as "classic_1st/ganon.zplay".
+# That is enough for the test runner to read it as nothing but a replay under
+# tests/replays.
+#
+# Whether the file exists isn't checked, because the failing run and its
+# baseline may be on a branch that lays out tests/replays differently than this
+# checkout.
+def is_test_suite_replay_name(name) -> bool:
+    if not isinstance(name, str) or not name.endswith('.zplay'):
+        return False
+    if name.startswith('-') or '\\' in name:
+        return False
+    if any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return False
+    # Rules out absolute paths too, which start with an empty part.
+    return all(part not in ('', '.', '..') for part in name.split('/'))
+
+
 # Returns a list of args to give to `run_replay_tests.py`, to collect snapshots of the failing replay
 # tests provided by `test_results_paths`
+#
+# With `test_suite_only`, failing replays whose name isn't that of a test suite
+# replay are skipped. Use it when the args are for a CI run, which can only run
+# those, and when the test results may come from a pull request.
 def get_args_for_collect_baseline_from_test_results(
     test_results_paths: list[Path],
+    test_suite_only: bool = False,
 ) -> list[str]:
     failing_segments_by_replay = {}
     name_to_path = {}
@@ -248,22 +283,25 @@ def get_args_for_collect_baseline_from_test_results(
                 continue
 
             if run.failing_frame == None:
-                print(f'{path}: no failing_frame for {run.name}, skipping (it probably crashed)')
+                print(f'{path}: no failing_frame for {run.name!r}, skipping (it probably crashed)')
+                continue
+
+            if test_suite_only and not is_test_suite_replay_name(run.name):
+                print(f'warning: {path}: {run.name!r} is not a test suite replay, skipping')
+                continue
+
+            # Capture the very first frame (this covers non-gfx failures).
+            # ...and all unexpected gfx segments (but, the limited variant).
+            segments = [[run.failing_frame, run.failing_frame]]
+            segments.extend(run.unexpected_gfx_segments_limited or [])
+            try:
+                segments = [[int(start), int(end)] for start, end in segments]
+            except (TypeError, ValueError):
+                print(f'warning: {path}: bad frame numbers for {run.name!r}, skipping')
                 continue
 
             name_to_path[run.name] = run.path
-
-            if run.name not in failing_segments_by_replay:
-                failing_segments_by_replay[run.name] = []
-            # Capture the very first frame (this covers non-gfx failures).
-            failing_segments_by_replay[run.name].append(
-                [run.failing_frame, run.failing_frame]
-            )
-            # ...and all unexpected gfx segments (but, the limited variant).
-            if run.unexpected_gfx_segments_limited:
-                failing_segments_by_replay[run.name].extend(
-                    run.unexpected_gfx_segments_limited
-                )
+            failing_segments_by_replay.setdefault(run.name, []).extend(segments)
 
     args = []
     last_args = []
@@ -273,7 +311,7 @@ def get_args_for_collect_baseline_from_test_results(
         # tests/replays differently than the checkout this runs on). Replays
         # from elsewhere (e.g. uploaded replays) are passed as paths.
         replay_path = Path(name_to_path[replay_name])
-        if is_test_suite_replay(replay_path, replay_name):
+        if test_suite_only or is_test_suite_replay(replay_path, replay_name):
             args.append(f'--filter={replay_name}')
         else:
             last_args.append(name_to_path[replay_name])
@@ -314,9 +352,11 @@ def is_test_suite_replay(replay_path: Path, replay_name: str) -> bool:
 # branch.
 # Returns the workflow run id, after job finishes.
 def collect_baseline_from_test_results(
-    gh: Github, repo: str, baseline_branch: str, test_results_paths: list[Path]
+    gh: GitHub, repo: str, baseline_branch: str, test_results_paths: list[Path]
 ) -> int:
-    extra_args = get_args_for_collect_baseline_from_test_results(test_results_paths)
+    extra_args = get_args_for_collect_baseline_from_test_results(
+        test_results_paths, test_suite_only=True
+    )
     if not baseline_branch:
         baseline_branch = find_baseline(gh, repo, default_baseline_branch())
 
@@ -330,7 +370,7 @@ def collect_baseline_from_test_results(
 
 
 def collect_baseline_from_failing_workflow_run(
-    gh: Github, repo: str, baseline_branch: str, run_id: int
+    gh: GitHub, repo: str, baseline_branch: str, run_id: int
 ):
     workflow_run_dir = get_gha_artifacts(gh, repo, run_id)
     test_results_paths = list(workflow_run_dir.rglob('test_results.json'))
@@ -342,7 +382,7 @@ def collect_baseline_from_failing_workflow_run(
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--repo', default='ZQuestClassic/ZQuestClassic')
-    parser.add_argument('--token', required=True)
+    parser.add_argument('--token', default=os.environ.get('GITHUB_TOKEN'))
 
     # Specify workflow parameters.
     parser.add_argument('--commit')
@@ -363,7 +403,9 @@ if __name__ == '__main__':
     parser.add_argument('--baseline_for_run', type=int)
 
     args = parser.parse_args()
-    gh = Github(args.token)
+    if not args.token:
+        parser.error('a token is required: set GITHUB_TOKEN or pass --token')
+    gh = GitHub(args.token)
 
     if args.test_results is not None and args.failing_workflow_run is not None:
         raise ArgumentTypeError(
@@ -407,7 +449,7 @@ if __name__ == '__main__':
     else:
         extra_args = []
         if args.extra_args:
-            extra_args = args.extra_args.split(' ')
+            extra_args = shlex.split(args.extra_args)
 
         if args.compiler:
             compiler = args.compiler

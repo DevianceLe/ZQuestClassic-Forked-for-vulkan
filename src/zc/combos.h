@@ -1,5 +1,4 @@
-#ifndef COMBOS_H_
-#define COMBOS_H_
+#pragma once
 
 #include "base/compiler.h"
 #include "core/handles.h"
@@ -36,6 +35,8 @@ public:
 	std::function<bool(combo_trigger const&)> trig_cond_a;
 	std::function<bool(combo_trigger const&, size_t)> trig_cond_b;
 	std::function<void(combo_trigger const&, bool)> side_fx;
+	// What sets the triggers off, as the trigger log names it ("Step->"), or null.
+	const char* cause = nullptr;
 	
 	TriggerData(std::function<bool(combo_trigger const&)> const& cond)
 		: special(0), w(nullptr), trig_cond_a(cond), trig_cond_b(), side_fx()
@@ -46,6 +47,7 @@ public:
 	TriggerData& set_special(int32_t new_special);
 	TriggerData& set_weapon(weapon* new_weapon);
 	TriggerData& set_side_fx(std::function<void(combo_trigger const&, bool)> const& new_side_fx);
+	TriggerData& set_cause(const char* new_cause);
 	
 	bool execute(const combined_handle_t& comb_handle) const;
 };
@@ -108,5 +110,3 @@ void cpos_count_instance(int cid, int add);
 bool cpos_moving_block_holds(int cid);
 
 void combos_init_game_vars();
-
-#endif

@@ -38,6 +38,31 @@ static const char* safe_dirstr(int dir)
 	return dirstr_proper[dir];
 }
 
+string trigger_copycat_name(int id)
+{
+	return fmt::format("Copycat {}", id);
+}
+string trigger_group_name(int group)
+{
+	return fmt::format("Trigger Group {}", group);
+}
+string trigger_exstate_name(int state)
+{
+	return fmt::format("ExState {}", state);
+}
+string trigger_exdoor_name(int dir, int index)
+{
+	return fmt::format("ExDoor {} {}", safe_dirstr(dir), index);
+}
+string trigger_level_state_name(int state)
+{
+	return fmt::format("LevelState {}", state);
+}
+string trigger_global_state_name(int state)
+{
+	return fmt::format("GlobalState {}", state);
+}
+
 static string safe_sfx_name(int sfx)
 {
 	int idx = sfx - 1;
@@ -53,6 +78,14 @@ static const char* safe_ctr_name(int ctr)
 	return ZI.getCtrName(ctr);
 }
 
+// "Label (id)" for a combo with a label, else `unlabeled`.
+static string combo_name(int cid, string const& unlabeled)
+{
+	if (unsigned(cid) < combobuf.size() && !combobuf[cid].label.empty())
+		return fmt::format("{} ({})", combobuf[cid].label, cid);
+	return unlabeled;
+}
+
 static const char* safe_neg_ctr_name(int ctr)
 {
 	// icounter_str2 has no name for the sscNONE (-1) slot, so its final entry
@@ -63,93 +96,56 @@ static const char* safe_neg_ctr_name(int ctr)
 	return icounter_str2[idx];
 }
 
-std::string combo_trigger::summarize(newcombo const& cmb) const
+const std::vector<std::pair<int, const char*>> lweapon_trigger_causes = {
+	{ TRIGFLAG_SWORD, "Sword" }, { TRIGFLAG_SWORDBEAM, "Sword Beam" },
+	{ TRIGFLAG_BRANG, "Boomerang" }, { TRIGFLAG_BOMB, "Bomb Boom" },
+	{ TRIGFLAG_SBOMB, "Super Bomb Boom" }, { TRIGFLAG_LITBOMB, "Placed Bomb" },
+	{ TRIGFLAG_LITSBOMB, "Placed Super Bomb" }, { TRIGFLAG_ARROW, "Arrow" },
+	{ TRIGFLAG_FIRE, "Fire" }, { TRIGFLAG_WHISTLE, "Whistle" }, { TRIGFLAG_BAIT, "Bait" },
+	{ TRIGFLAG_WAND, "Wand" }, { TRIGFLAG_MAGIC, "Magic" }, { TRIGFLAG_WIND, "Wind" },
+	{ TRIGFLAG_REFMAGIC, "Refl. Magic" }, { TRIGFLAG_REFFIREBALL, "Refl. Fireball" },
+	{ TRIGFLAG_REFROCK, "Refl. Rock" }, { TRIGFLAG_LWREFARROW, "Refl. Arrow" },
+	{ TRIGFLAG_LWREFFIRE, "Refl. Fire" }, { TRIGFLAG_LWREFFIRE2, "Refl. Fire 2" },
+	{ TRIGFLAG_HAMMER, "Hammer" }, { TRIGFLAG_HOOKSHOT, "Hookshot" }, { TRIGFLAG_SPARKLE, "Sparkle" },
+	{ TRIGFLAG_BYRNA, "Byrna" }, { TRIGFLAG_REFBEAM, "Refl. Beam" }, { TRIGFLAG_STOMP, "Stomp" },
+	{ TRIGFLAG_THROWN, "Thrown" }, { TRIGFLAG_QUAKESTUN, "Quake Hammer" },
+	{ TRIGFLAG_SQUAKESTUN, "S. Quake Hammer" }, { TRIGFLAG_SCRIPT01, "Custom Weapon 1" },
+	{ TRIGFLAG_SCRIPT02, "Custom Weapon 2" }, { TRIGFLAG_SCRIPT03, "Custom Weapon 3" },
+	{ TRIGFLAG_SCRIPT04, "Custom Weapon 4" }, { TRIGFLAG_SCRIPT05, "Custom Weapon 5" },
+	{ TRIGFLAG_SCRIPT06, "Custom Weapon 6" }, { TRIGFLAG_SCRIPT07, "Custom Weapon 7" },
+	{ TRIGFLAG_SCRIPT08, "Custom Weapon 8" }, { TRIGFLAG_SCRIPT09, "Custom Weapon 9" },
+	{ TRIGFLAG_SCRIPT10, "Custom Weapon 10" },
+};
+const std::vector<std::pair<int, const char*>> eweapon_trigger_causes = {
+	{ TRIGFLAG_EWFIREBALL, "Fireball" }, { TRIGFLAG_EWARROW, "Arrow" },
+	{ TRIGFLAG_EWBRANG, "Boomerang" }, { TRIGFLAG_EWSWORD, "Sword" }, { TRIGFLAG_EWROCK, "Rock" },
+	{ TRIGFLAG_EWMAGIC, "Magic" }, { TRIGFLAG_EWBBLAST, "Bomb Blast" },
+	{ TRIGFLAG_EWSBBLAST, "SBomb Blast" }, { TRIGFLAG_EWLITBOMB, "Lit Bomb" },
+	{ TRIGFLAG_EWLITSBOMB, "Lit SBomb" }, { TRIGFLAG_EWFIRETRAIL, "Fire Trail" },
+	{ TRIGFLAG_EWFLAME, "Flame" }, { TRIGFLAG_EWWIND, "Wind" }, { TRIGFLAG_EWFLAME2, "Flame 2" },
+	{ TRIGFLAG_EWSCRIPT01, "Custom Weapon 1" }, { TRIGFLAG_EWSCRIPT02, "Custom Weapon 2" },
+	{ TRIGFLAG_EWSCRIPT03, "Custom Weapon 3" }, { TRIGFLAG_EWSCRIPT04, "Custom Weapon 4" },
+	{ TRIGFLAG_EWSCRIPT05, "Custom Weapon 5" }, { TRIGFLAG_EWSCRIPT06, "Custom Weapon 6" },
+	{ TRIGFLAG_EWSCRIPT07, "Custom Weapon 7" }, { TRIGFLAG_EWSCRIPT08, "Custom Weapon 8" },
+	{ TRIGFLAG_EWSCRIPT09, "Custom Weapon 9" }, { TRIGFLAG_EWSCRIPT10, "Custom Weapon 10" },
+};
+const std::vector<std::pair<int, const char*>> burning_trigger_causes = {
+	{ TRIGFLAG_ANYFIRE, "Any Fire" }, { TRIGFLAG_STRONGFIRE, "Strong Fire" },
+	{ TRIGFLAG_MAGICFIRE, "Magic Fire" }, { TRIGFLAG_DIVINEFIRE, "Divine Fire" },
+};
+
+combo_trigger_summary combo_trigger::summarize_parts(newcombo const& cmb, int cid) const
 {
 #define TRIM_TRAILING_CHARS(val) val = val.substr(0, val.find_last_not_of(", \n")+1)
-	std::ostringstream output, wpn_causes, wpn_effects, causes, conditions, effects, fail_effects;
+	std::ostringstream wpn_causes, wpn_effects, causes, conditions, effects, fail_effects;
 	string indent = "   ";
 
 	// lweapon causes
 	{
 		vector<std::string> lwpns;
-		if (trigger_flags.get(TRIGFLAG_SWORD))
-			lwpns.emplace_back("Sword");
-		if (trigger_flags.get(TRIGFLAG_SWORDBEAM))
-			lwpns.emplace_back("Sword Beam");
-		if (trigger_flags.get(TRIGFLAG_BRANG))
-			lwpns.emplace_back("Boomerang");
-		if (trigger_flags.get(TRIGFLAG_BOMB))
-			lwpns.emplace_back("Bomb Boom");
-		if (trigger_flags.get(TRIGFLAG_SBOMB))
-			lwpns.emplace_back("Super Bomb Boom");
-		if (trigger_flags.get(TRIGFLAG_LITBOMB))
-			lwpns.emplace_back("Placed Bomb");
-		if (trigger_flags.get(TRIGFLAG_LITSBOMB))
-			lwpns.emplace_back("Placed Super Bomb");
-		if (trigger_flags.get(TRIGFLAG_ARROW))
-			lwpns.emplace_back("Arrow");
-		if (trigger_flags.get(TRIGFLAG_FIRE))
-			lwpns.emplace_back("Fire");
-		if (trigger_flags.get(TRIGFLAG_WHISTLE))
-			lwpns.emplace_back("Whistle");
-		if (trigger_flags.get(TRIGFLAG_BAIT))
-			lwpns.emplace_back("Bait");
-		if (trigger_flags.get(TRIGFLAG_WAND))
-			lwpns.emplace_back("Wand");
-		if (trigger_flags.get(TRIGFLAG_MAGIC))
-			lwpns.emplace_back("Magic");
-		if (trigger_flags.get(TRIGFLAG_WIND))
-			lwpns.emplace_back("Wind");
-		if (trigger_flags.get(TRIGFLAG_REFMAGIC))
-			lwpns.emplace_back("Refl. Magic");
-		if (trigger_flags.get(TRIGFLAG_REFFIREBALL))
-			lwpns.emplace_back("Refl. Fireball");
-		if (trigger_flags.get(TRIGFLAG_REFROCK))
-			lwpns.emplace_back("Refl. Rock");
-		if (trigger_flags.get(TRIGFLAG_LWREFARROW))
-			lwpns.emplace_back("Refl. Arrow");
-		if (trigger_flags.get(TRIGFLAG_LWREFFIRE))
-			lwpns.emplace_back("Refl. Fire");
-		if (trigger_flags.get(TRIGFLAG_LWREFFIRE2))
-			lwpns.emplace_back("Refl. Fire 2");
-		if (trigger_flags.get(TRIGFLAG_HAMMER))
-			lwpns.emplace_back("Hammer");
-		if (trigger_flags.get(TRIGFLAG_HOOKSHOT))
-			lwpns.emplace_back("Hookshot");
-		if (trigger_flags.get(TRIGFLAG_SPARKLE))
-			lwpns.emplace_back("Sparkle");
-		if (trigger_flags.get(TRIGFLAG_BYRNA))
-			lwpns.emplace_back("Byrna");
-		if (trigger_flags.get(TRIGFLAG_REFBEAM))
-			lwpns.emplace_back("Refl. Beam");
-		if (trigger_flags.get(TRIGFLAG_STOMP))
-			lwpns.emplace_back("Stomp");
-		if (trigger_flags.get(TRIGFLAG_THROWN))
-			lwpns.emplace_back("Thrown");
-		if (trigger_flags.get(TRIGFLAG_QUAKESTUN))
-			lwpns.emplace_back("Quake Hammer");
-		if (trigger_flags.get(TRIGFLAG_SQUAKESTUN))
-			lwpns.emplace_back("S. Quake Hammer");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT01))
-			lwpns.emplace_back("Custom Weapon 1");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT02))
-			lwpns.emplace_back("Custom Weapon 2");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT03))
-			lwpns.emplace_back("Custom Weapon 3");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT04))
-			lwpns.emplace_back("Custom Weapon 4");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT05))
-			lwpns.emplace_back("Custom Weapon 5");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT06))
-			lwpns.emplace_back("Custom Weapon 6");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT07))
-			lwpns.emplace_back("Custom Weapon 7");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT08))
-			lwpns.emplace_back("Custom Weapon 8");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT09))
-			lwpns.emplace_back("Custom Weapon 9");
-		if (trigger_flags.get(TRIGFLAG_SCRIPT10))
-			lwpns.emplace_back("Custom Weapon 10");
+		for (auto [flag, name] : lweapon_trigger_causes)
+			if (trigger_flags.get(flag))
+				lwpns.emplace_back(name);
 
 		if (!lwpns.empty())
 		{
@@ -172,54 +168,9 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 	// eweapon causes
 	{
 		vector<std::string> ewpns;
-		if (trigger_flags.get(TRIGFLAG_EWFIREBALL))
-			ewpns.emplace_back("Fireball");
-		if (trigger_flags.get(TRIGFLAG_EWARROW))
-			ewpns.emplace_back("Arrow");
-		if (trigger_flags.get(TRIGFLAG_EWBRANG))
-			ewpns.emplace_back("Boomerang");
-		if (trigger_flags.get(TRIGFLAG_EWSWORD))
-			ewpns.emplace_back("Sword");
-		if (trigger_flags.get(TRIGFLAG_EWROCK))
-			ewpns.emplace_back("Rock");
-		if (trigger_flags.get(TRIGFLAG_EWMAGIC))
-			ewpns.emplace_back("Magic");
-		if (trigger_flags.get(TRIGFLAG_EWBBLAST))
-			ewpns.emplace_back("Bomb Blast");
-		if (trigger_flags.get(TRIGFLAG_EWSBBLAST))
-			ewpns.emplace_back("SBomb Blast");
-		if (trigger_flags.get(TRIGFLAG_EWLITBOMB))
-			ewpns.emplace_back("Lit Bomb");
-		if (trigger_flags.get(TRIGFLAG_EWLITSBOMB))
-			ewpns.emplace_back("Lit SBomb");
-		if (trigger_flags.get(TRIGFLAG_EWFIRETRAIL))
-			ewpns.emplace_back("Fire Trail");
-		if (trigger_flags.get(TRIGFLAG_EWFLAME))
-			ewpns.emplace_back("Flame");
-		if (trigger_flags.get(TRIGFLAG_EWWIND))
-			ewpns.emplace_back("Wind");
-		if (trigger_flags.get(TRIGFLAG_EWFLAME2))
-			ewpns.emplace_back("Flame 2");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT01))
-			ewpns.emplace_back("Custom Weapon 1");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT02))
-			ewpns.emplace_back("Custom Weapon 2");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT03))
-			ewpns.emplace_back("Custom Weapon 3");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT04))
-			ewpns.emplace_back("Custom Weapon 4");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT05))
-			ewpns.emplace_back("Custom Weapon 5");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT06))
-			ewpns.emplace_back("Custom Weapon 6");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT07))
-			ewpns.emplace_back("Custom Weapon 7");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT08))
-			ewpns.emplace_back("Custom Weapon 8");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT09))
-			ewpns.emplace_back("Custom Weapon 9");
-		if (trigger_flags.get(TRIGFLAG_EWSCRIPT10))
-			ewpns.emplace_back("Custom Weapon 10");
+		for (auto [flag, name] : eweapon_trigger_causes)
+			if (trigger_flags.get(flag))
+				ewpns.emplace_back(name);
 
 		if (!ewpns.empty())
 		{
@@ -235,14 +186,10 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 	// other weapon causes
 	{
 		vector<std::string> wpns;
-		if (trigger_flags.get(TRIGFLAG_ANYFIRE))
-			wpns.emplace_back("Any Fire");
-		if (trigger_flags.get(TRIGFLAG_STRONGFIRE))
-			wpns.emplace_back("Strong Fire");
-		if (trigger_flags.get(TRIGFLAG_MAGICFIRE))
-			wpns.emplace_back("Magic Fire");
-		if (trigger_flags.get(TRIGFLAG_DIVINEFIRE))
-			wpns.emplace_back("Divine Fire");
+		for (auto [flag, name] : burning_trigger_causes)
+			if (trigger_flags.get(flag))
+				wpns.emplace_back(name);
+
 		if (!wpns.empty())
 		{
 			wpn_causes << indent << "Any weapons matching: ";
@@ -265,6 +212,9 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 		vector<std::string> fx;
 		if (trigger_flags.get(TRIGFLAG_KILLWPN))
 			fx.emplace_back("Kill Triggering Weapon");
+		// New triggers have this on, so it's only worth listing when a weapon can trigger it.
+		if (trigger_flags.get(TRIGFLAG_ONCE_PER_WEAPON) && !wpn_causes.str().empty())
+			fx.emplace_back("Once Per Weapon");
 		string ignite = trigger_flags.get(TRIGFLAG_UNIGNITE_WEAPONS) ? "Unignite" : "Ignite";
 		if (trigger_flags.get(TRIGFLAG_IGNITE_ANYFIRE))
 			fx.emplace_back(fmt::format("{} Any Fire", ignite));
@@ -293,12 +243,12 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 		bool first = true;
 		if (cause_ex1)
 		{
-			causes << (first ? indent : ", ") << fmt::format("ExState {}", exstate);
+			causes << (first ? indent : ", ") << trigger_exstate_name(exstate);
 			first = false;
 		}
 		if (cause_ex2)
 		{
-			causes << (first ? indent : ", ") << fmt::format("ExDoor {} {}", safe_dirstr(exdoor_dir), exdoor_ind);
+			causes << (first ? indent : ", ") << trigger_exdoor_name(exdoor_dir, exdoor_ind);
 			first = false;
 		}
 		if (cause_ex3)
@@ -394,22 +344,22 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 		vector<string> misc_cause;
 
 		if (trigcopycat && !trigger_flags.get(TRIGFLAG_NO_COPYCAT_CAUSE))
-			misc_cause.emplace_back(fmt::format("Copycat {}", trigcopycat));
+			misc_cause.emplace_back(trigger_copycat_name(trigcopycat));
 		
 		if (trigger_flags.get(TRIGFLAG_TRIGGERED_BY_LARGE_COMBO_COPYCAT))
 			misc_cause.emplace_back(fmt::format("Large Combo Copycat {}", large_combo_copycat));
 
 		if (trigger_flags.get(TRIGFLAG_TGROUP_LESS))
-			misc_cause.emplace_back(fmt::format("Trigger Group {} < {}", trig_group, trig_group_val));
+			misc_cause.emplace_back(fmt::format("{} < {}", trigger_group_name(trig_group), trig_group_val));
 
 		if (trigger_flags.get(TRIGFLAG_TGROUP_GREATER))
-			misc_cause.emplace_back(fmt::format("Trigger Group {} > {}", trig_group, trig_group_val));
+			misc_cause.emplace_back(fmt::format("{} > {}", trigger_group_name(trig_group), trig_group_val));
 
 		if (trigger_flags.get(TRIGFLAG_TRIGLEVELSTATE))
-			misc_cause.emplace_back(fmt::format("LevelState {} toggles", trig_lstate));
+			misc_cause.emplace_back(fmt::format("{} toggles", trigger_level_state_name(trig_lstate)));
 
 		if (trigger_flags.get(TRIGFLAG_TRIGGLOBALSTATE))
-			misc_cause.emplace_back(fmt::format("GlobalState {} toggles", trig_gstate));
+			misc_cause.emplace_back(fmt::format("{} toggles", trigger_global_state_name(trig_gstate)));
 
 		string light_beam = triglbeam ? fmt::format("Beam {}", triglbeam) : "Any Beam";
 		if (trigtimer)
@@ -872,9 +822,19 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 		}
 
 		if (trigger_flags.get(TRIGFLAG_CMB_CHANGE_ABSOLUTE))
-			effects << indent << "Change combo to combo #" << trigchange << "\n";
+			effects << indent << "Change combo to " << combo_name(trigchange, fmt::format("combo #{}", trigchange)) << "\n";
 		else if (trigchange)
-			effects << indent << "Change combo by " << trigchange << "\n";
+		{
+			effects << indent << "Change combo by " << trigchange;
+			// Name the combo it changes into, when that combo has a label.
+			if (cid >= 0)
+			{
+				string target = combo_name(cid + trigchange, "");
+				if (!target.empty())
+					effects << ", into " << target;
+			}
+			effects << "\n";
+		}
 		if (trigger_flags.get(TRIGFLAG_CSET_CHANGE_ABSOLUTE))
 			effects << indent << "Change cset to CSet " << int(trigcschange) << "\n";
 		else if (trigcschange)
@@ -901,7 +861,12 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 			}
 		}
 		if (trig_genscr)
-			effects << indent << fmt::format("Run generic script {} ({}) in frozen mode\n", trig_genscr, genericmap[trig_genscr].scriptname);
+		{
+			// genericmap is indexed from 0, but the slot numbers start at 1.
+			auto it = genericmap.find(trig_genscr - 1);
+			string name = it == genericmap.end() ? "" : it->second.scriptname;
+			effects << indent << fmt::format("Run generic script {} ({}) in frozen mode\n", trig_genscr, name);
+		}
 		if (trig_msgstr)
 			effects << indent << "Play message string " << trig_msgstr << "\n";
 		if (trigger_flags.get(TRIGFLAG_REVERT_GRAVITY))
@@ -936,7 +901,7 @@ std::string combo_trigger::summarize(newcombo const& cmb) const
 		if (trigger_flags.get(TRIGFLAG_CLEAREWEAPONS))
 			misc_effects.emplace_back("Clear all eweapons");
 		if (trigcopycat)
-			misc_effects.emplace_back(fmt::format("Activate Copycat {}", trigcopycat));
+			misc_effects.emplace_back("Activate " + trigger_copycat_name(trigcopycat));
 		if (trigger_flags.get(TRIGFLAG_TRIGGER_LARGE_COMBO_COPYCAT))
 			misc_effects.emplace_back(fmt::format("Activate Large Combo Copycat {}", large_combo_copycat));
 
@@ -993,7 +958,8 @@ if (var > -2) \
 			effects << indent << fmt::format("Set player Jump to {}\n", player_bounce);
 
 		if (force_ice_combo > -1)
-			effects << indent << fmt::format("Set player forced ice physics to use Combo #{}\n", force_ice_combo);
+			effects << indent << fmt::format("Set player forced ice physics to use {}\n",
+				combo_name(force_ice_combo, fmt::format("Combo #{}", force_ice_combo)));
 		if (trigger_flags.all({ TRIGFLAG_FORCE_ICE_VX, TRIGFLAG_FORCE_ICE_VY }))
 			effects << indent << fmt::format("Force player's ice velocity to {},{}\n", force_ice_vx, force_ice_vy);
 		else if (trigger_flags.get(TRIGFLAG_FORCE_ICE_VX))
@@ -1005,7 +971,7 @@ if (var > -2) \
 		{
 			effects << indent << fmt::format("Spawn enemy #{} ({})\n", spawnenemy, guy_string[spawnenemy]);
 			if (exstate > -1 && enm_ex)
-				effects << indent << fmt::format("Sets ExState {} when spawned enemy is killed\n", exstate);
+				effects << indent << fmt::format("Sets {} when spawned enemy is killed\n", trigger_exstate_name(exstate));
 		}
 		if (spawnitem)
 		{
@@ -1026,32 +992,35 @@ if (var > -2) \
 					ips.emplace_back("Triggers Secrets");
 				if (spawnip & ipCANGRAB)
 					ips.emplace_back("Always Grabbable");
-				effects << " (pickup flag(s): ";
-				for (auto const& str : misc_effects)
-					effects << str << ", ";
-				effects.seekp(int(effects.tellp()) - 2);
-				effects << ")";
+				if (!ips.empty())
+				{
+					effects << " (pickup flag(s): ";
+					for (auto const& str : ips)
+						effects << str << ", ";
+					effects.seekp(int(effects.tellp()) - 2);
+					effects << ")";
+				}
 			}
 			if (trigger_flags.get(TRIGFLAG_AUTOGRABITEM))
 				effects << " (instantly collected)";
 			effects << "\n";
 			if (exstate > -1 && itm_ex)
-				effects << indent << fmt::format("Sets ExState {} when spawned item is collected\n", exstate);
+				effects << indent << fmt::format("Sets {} when spawned item is collected\n", trigger_exstate_name(exstate));
 		}
 
 		if (exstate > -1)
 		{
 			if (trigger_flags.get(TRIGFLAG_UNSETEXSTATE))
-				effects << indent << fmt::format("Unsets ExState {}\n", exstate);
+				effects << indent << fmt::format("Unsets {}\n", trigger_exstate_name(exstate));
 			else if (!itm_ex && !enm_ex)
-				effects << indent << fmt::format("Sets ExState {}\n", exstate);
+				effects << indent << fmt::format("Sets {}\n", trigger_exstate_name(exstate));
 		}
 		if (exdoor_dir > -1)
 		{
 			if (trigger_flags.get(TRIGFLAG_UNSETEXDOOR))
-				effects << indent << fmt::format("Unsets ExDoor {} {}\n", safe_dirstr(exdoor_dir), exdoor_ind);
+				effects << indent << fmt::format("Unsets {}\n", trigger_exdoor_name(exdoor_dir, exdoor_ind));
 			else
-				effects << indent << fmt::format("Sets ExDoor {} {}\n", safe_dirstr(exdoor_dir), exdoor_ind);
+				effects << indent << fmt::format("Sets {}\n", trigger_exdoor_name(exdoor_dir, exdoor_ind));
 		}
 		{
 			bool do_set = trigger_flags.get(TRIGFLAG_COMBOPOSSTATE_SET);
@@ -1070,12 +1039,12 @@ if (var > -2) \
 		}
 
 		if (trigger_flags.get(TRIGFLAG_LEVELSTATE))
-			effects << indent << fmt::format("Toggle LevelState {}\n", trig_lstate);
+			effects << indent << fmt::format("Toggle {}\n", trigger_level_state_name(trig_lstate));
 		if (trigger_flags.get(TRIGFLAG_GLOBALSTATE))
 		{
 			if (trig_statetime > 0)
-				effects << indent << fmt::format("Set GlobalState {} Timer = {}\n", trig_gstate, trig_statetime);
-			else effects << indent << fmt::format("Toggle GlobalState {}\n", trig_gstate);
+				effects << indent << fmt::format("Set {} Timer = {}\n", trigger_global_state_name(trig_gstate), trig_statetime);
+			else effects << indent << fmt::format("Toggle {}\n", trigger_global_state_name(trig_gstate));
 		}
 
 		if (triggeritem && trigger_flags.get(TRIGFLAG_CONSUMEITEM))
@@ -1164,7 +1133,7 @@ if (var > -2) \
 		if (did_btn_cause && prompt_cid)
 		{
 			effects << indent << fmt::format("Show Button Prompt (when in range), combo {}, cset {}, at {},{} relative to the player\n",
-				prompt_cid, prompt_cs, prompt_x, prompt_y);
+				combo_name(prompt_cid, std::to_string(prompt_cid)), prompt_cs, prompt_x, prompt_y);
 		}
 	}
 
@@ -1176,7 +1145,7 @@ if (var > -2) \
 		if (did_btn_cause && fail_prompt_cid)
 		{
 			fail_effects << indent << fmt::format("Show Button Prompt (when in range), combo {}, cset {}, at {},{} relative to the player\n",
-				fail_prompt_cid, fail_prompt_cs, prompt_x, prompt_y);
+				combo_name(fail_prompt_cid, std::to_string(fail_prompt_cid)), fail_prompt_cs, prompt_x, prompt_y);
 		}
 		if (fail_msgstr)
 			fail_effects << indent << "Play message string " << fail_msgstr << "\n";
@@ -1215,27 +1184,42 @@ if (var > -2) \
 	string fail_str = fail_effects.str();
 	TRIM_TRAILING_CHARS(fail_str);
 	
+	return {
+		.separate_weapon = separate_weapon,
+		.weapon_causes = wpn_cause_str,
+		.weapon_effects = wpn_effect_str,
+		.causes = cause_str,
+		.conditions = condition_str,
+		.effects = effect_str,
+		.fail_effects = fail_str,
+	};
+#undef TRIM_TRAILING_CHARS
+}
+
+std::string combo_trigger::summarize(newcombo const& cmb, int cid) const
+{
+	auto parts = summarize_parts(cmb, cid);
+	std::ostringstream output;
 	output << fmt::format("Label: {}\n", label);
 	if (trigger_flags.get(TRIGFLAG_TGROUP_CONTRIB))
-		output << fmt::format("Contributes to Trigger Group {}\n", trig_group);
-	if (separate_weapon)
+		output << fmt::format("Contributes to {}\n", trigger_group_name(trig_group));
+	if (parts.separate_weapon)
 	{
 		output << "Weapon causes and effects are separate.\n";
-		output << "Weapon Causes:\n" << wpn_cause_str << "\n";
-		output << "Weapon Effects:\n" << wpn_effect_str << "\n";
+		output << "Weapon Causes:\n" << parts.weapon_causes << "\n";
+		output << "Weapon Effects:\n" << parts.weapon_effects << "\n";
 	}
-	if (!cause_str.empty())
-		output << (separate_weapon ? "Non-Weapon Causes:\n" : "Caused by:\n") << cause_str << "\n";
-	if (!condition_str.empty())
-		output << (separate_weapon ? "Non-Weapon Conditions:\n" : "Conditions:\n") << condition_str << "\n";
-	if (!effect_str.empty())
-		output << (separate_weapon ? "Non-Weapon Effects:\n" : "Effects:\n") << effect_str << "\n";
-	if (!fail_str.empty())
-		output << "Effects on Condition Fail:\n" << fail_str << "\n";
+	if (!parts.causes.empty())
+		output << (parts.separate_weapon ? "Non-Weapon Causes:\n" : "Caused by:\n") << parts.causes << "\n";
+	if (!parts.conditions.empty())
+		output << (parts.separate_weapon ? "Non-Weapon Conditions:\n" : "Conditions:\n") << parts.conditions << "\n";
+	if (!parts.effects.empty())
+		output << (parts.separate_weapon ? "Non-Weapon Effects:\n" : "Effects:\n") << parts.effects << "\n";
+	if (!parts.fail_effects.empty())
+		output << "Effects on Condition Fail:\n" << parts.fail_effects << "\n";
 	auto ret_str = output.str();
-	TRIM_TRAILING_CHARS(ret_str);
+	ret_str = ret_str.substr(0, ret_str.find_last_not_of(", \n")+1);
 	return ret_str;
-#undef TRIM_TRAILING_CHARS
 }
 
 bool combo_trigger::is_blank() const
@@ -1425,6 +1409,19 @@ void newcombo::reset_animation()
 	tile = o_tile;
 	cur_frame = 0;
 	aclk = 0;
+}
+
+bool newcombo::runs_generic_effects() const
+{
+	switch (type)
+	{
+		case cTRIGGERGENERIC:
+			return true;
+		case cSCRIPT1: case cSCRIPT2: case cSCRIPT3: case cSCRIPT4: case cSCRIPT5:
+		case cSCRIPT6: case cSCRIPT7: case cSCRIPT8: case cSCRIPT9: case cSCRIPT10:
+			return usrflags & cflag9;
+	}
+	return false;
 }
 
 bool newcombo::animate(bool force_next_frame)
@@ -1621,3 +1618,49 @@ bool is_push_flag(int flag, optional<int> dir)
 	}
 	return false;
 }
+
+bool combo_type_has_trigger_effects(int type)
+{
+	switch (type)
+	{
+		case cCUTSCENEEFFECT: case cCUTSCENETRIG: case cCSWITCH: case cCSWITCHBLOCK: case cSIGNPOST:
+		case cSLASH: case cSLASHITEM: case cBUSH: case cFLOWERS: case cTALLGRASS:
+		case cTALLGRASSNEXT: case cSLASHNEXT: case cSLASHNEXTITEM: case cBUSHNEXT:
+		case cSLASHTOUCHY: case cSLASHITEMTOUCHY: case cBUSHTOUCHY: case cFLOWERSTOUCHY:
+		case cTALLGRASSTOUCHY: case cSLASHNEXTTOUCHY: case cSLASHNEXTITEMTOUCHY: case cBUSHNEXTTOUCHY:
+		case cSTEP: case cSTEPSAME: case cSTEPALL:
+		case cSTAIR: case cSTAIRB: case cSTAIRC: case cSTAIRD: case cSTAIRR:
+		case cSWIMWARP: case cSWIMWARPB: case cSWIMWARPC: case cSWIMWARPD:
+		case cDIVEWARP: case cDIVEWARPB: case cDIVEWARPC: case cDIVEWARPD:
+		case cPIT: case cPITB: case cPITC: case cPITD: case cPITR:
+		case cAWARPA: case cAWARPB: case cAWARPC: case cAWARPD: case cAWARPR:
+		case cSWARPA: case cSWARPB: case cSWARPC: case cSWARPD: case cSWARPR:
+		case cCHEST: case cLOCKEDCHEST: case cBOSSCHEST: case cLOCKBLOCK: case cBOSSLOCKBLOCK:
+		case cARMOS: case cBSGRAVE: case cGRAVE:
+		case cDAMAGE1: case cDAMAGE2: case cDAMAGE3: case cDAMAGE4: case cDAMAGE5: case cDAMAGE6: case cDAMAGE7:
+		case cSTEPSFX: case cSWITCHHOOK: case cSHOOTER: case cSAVE: case cSAVE2: case cSPINTILE1:
+			return true;
+	}
+	return false;
+}
+
+bool alwaysCTypeEffects(int32_t type)
+{
+	switch(type)
+	{
+		case cCUSTOMBLOCK:
+			return true;
+	}
+	return false;
+}
+
+const std::vector<std::pair<int, const char*>> every_frame_trigger_causes = {
+	{ TRIGFLAG_AUTOMATIC, "Always Triggered" },
+	{ TRIGFLAG_STEP, "Step->" }, { TRIGFLAG_STEPSENS, "Step-> (Sensitive)" },
+	{ TRIGFLAG_SWIMTRIG, "Swim->" }, { TRIGFLAG_SWIMSENSTRIG, "Swim-> (Sensitive)" },
+	{ TRIGFLAG_DIVETRIG, "Dive->" }, { TRIGFLAG_DIVESENSTRIG, "Dive-> (Sensitive)" },
+	{ TRIGFLAG_ENEMIESKILLED, "Enemies->" },
+	{ TRIGFLAG_TGROUP_LESS, "TrigGroup Less->" }, { TRIGFLAG_TGROUP_GREATER, "TrigGroup Greater->" },
+	{ TRIGFLAG_LIGHTON, "Light On->" }, { TRIGFLAG_LIGHTOFF, "Light Off->" },
+	{ TRIGFLAG_LENSON, "Lens On->" }, { TRIGFLAG_LENSOFF, "Lens Off->" },
+};

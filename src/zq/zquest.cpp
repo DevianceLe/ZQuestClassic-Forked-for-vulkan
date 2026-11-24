@@ -78,6 +78,7 @@
 #include "zq/dialog/inst_var_remap.h"
 #include "zq/script_slot_remap.h"
 #include "zq/dialog/screen_enemies.h"
+#include "zq/dialog/screen_triggers.h"
 #include "zq/dialog/enemypattern.h"
 #include "zq/dialog/sfxdata.h"
 #include "zq/dialog/mapstyles.h"
@@ -1501,6 +1502,7 @@ static NewMenu data_menu
 	{ "&Palette", onScreenPalette },
 	{},
 	{ "&Room Data", onRoom },
+	{ "Combo Tri&ggers", call_screen_triggers_dialog },
 	{ "&Notes", onScreenNotes },
 	{ "&Browse Notes", browse_screen_notes },
 };
@@ -9270,6 +9272,15 @@ int32_t scrollto_cmb(int32_t cid)
 	res -= res%sqr.w;
 	return res;
 }
+
+void select_combo_for_drawing(int32_t cid, int32_t cs)
+{
+	Combo = cid;
+	CSet = cs;
+	if(AutoBrush)
+		BrushWidth = BrushHeight = 1;
+	First[current_combolist] = scrollto_cmb(cid);
+}
 int32_t scrollto_alias(int32_t alid)
 {
 	auto& sqr = comboaliaslist[current_comboalist];
@@ -10068,8 +10079,7 @@ void domouse()
 						map_page[current_mappage].map=Map.getCurrMap();
 						map_page[current_mappage].screen=Map.getCurrScr();
 						current_mappage=btn;
-						Map.setCurrMap(map_page[current_mappage].map);
-						Map.setCurrScr(map_page[current_mappage].screen);
+						Map.goto_mapscr(map_page[current_mappage].map, map_page[current_mappage].screen);
 						rebuild_trans_table(); //Woo
 					}
 					else if (rclick)

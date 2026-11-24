@@ -1,5 +1,4 @@
-#ifndef ZC_SCRIPTING_COMMON_H_
-#define ZC_SCRIPTING_COMMON_H_
+#pragma once
 
 #include "allegro/base.h"
 #include "base/expected.h"
@@ -366,5 +365,6 @@ public:
 };
 
 expected<std::string, std::string> parse_user_path(const std::string& user_path, bool is_file);
-
-#endif
+// For quests without qr_BITMAP_AND_FILESYSTEM_PATHS_ALWAYS_RELATIVE: the path stays relative to
+// the current directory as it always has been, but must not leave it.
+expected<std::string, std::string> parse_legacy_user_path(std::string user_path);

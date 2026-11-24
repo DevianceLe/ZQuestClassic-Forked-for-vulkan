@@ -40,7 +40,9 @@
 #include "zalleg/zsys.h"
 #include "zc/cheats.h"
 #include "zc/combos.h"
+#include "zc/combo_trigger_log.h"
 #include "zc/commands.h"
+#include "zc/fuzz.h"
 #include "zc/debugger/debugger.h"
 #include "zc/ffscript.h"
 #include "zc/frame_timings.h"
@@ -69,6 +71,7 @@
 #include <fmt/format.h>
 #include <fmt/std.h>
 
+#include <array>
 #include <assert.h>
 #include <cstdlib>
 #include <cstring>
@@ -298,7 +301,7 @@ bool palette_user_tinted = false;
 
 bool show_layers[7] = {true,true,true,true,true,true,true};
      //oveheard combos     //pushblocks
-bool show_layer_over=true, show_layer_push=true, show_sprites=true, show_ffcs=true, show_hitboxes=false, show_walkflags=false, show_ff_scripts=false, show_effectflags = false, show_trigger_prox = false, show_viewport_follow = false;
+bool show_layer_over=true, show_layer_push=true, show_sprites=true, show_ffcs=true, show_hitboxes=false, show_walkflags=false, show_ff_scripts=false, show_effectflags = false, show_trigger_prox = false, show_trigger_log = false, show_viewport_follow = false;
 
 
 bool Throttlefps = true, MenuOpen = false, ClickToFreeze=false, Paused=false, Saving=false,
@@ -756,6 +759,16 @@ void hit_close_button()
 extern ScriptType curScriptType;
 extern word curScriptNum;
 
+static void Z_eventlog_v(const char *format, va_list ap)
+{
+	char buf[2048];
+	vsnprintf(buf, 2048, format, ap);
+	al_trace("%s",buf);
+
+	if ( console_enabled ) {zscript_coloured_console.cprintf((CConsoleLoggerEx::COLOR_GREEN | CConsoleLoggerEx::COLOR_RED | CConsoleLoggerEx::COLOR_INTENSITY | 
+		CConsoleLoggerEx::COLOR_BACKGROUND_BLACK),"%s",buf); }
+}
+
 void Z_eventlog(const char *format,...)
 {
 	if (!Playing)
@@ -763,17 +776,19 @@ void Z_eventlog(const char *format,...)
 
     if(get_qr(qr_LOG) || DEVLEVEL > 0)
     {
-        char buf[2048];
-        
         va_list ap;
         va_start(ap, format);
-        vsnprintf(buf, 2048, format, ap);
+        Z_eventlog_v(format, ap);
         va_end(ap);
-        al_trace("%s",buf);
-        
-		if ( console_enabled ) {zscript_coloured_console.cprintf((CConsoleLoggerEx::COLOR_GREEN | CConsoleLoggerEx::COLOR_RED | CConsoleLoggerEx::COLOR_INTENSITY | 
-			CConsoleLoggerEx::COLOR_BACKGROUND_BLACK),"%s",buf); }
     }
+}
+
+void Z_eventlog_force(const char *format,...)
+{
+	va_list ap;
+	va_start(ap, format);
+	Z_eventlog_v(format, ap);
+	va_end(ap);
 }
 
 // TODO: callers should always end with a newline otherwise the log will render poorly in the console / allegro.log.
@@ -1482,7 +1497,7 @@ void init_game_vars(bool is_cont_game = false)
 		cheat=0;
 		show_layers[0]=show_layers[1]=show_layers[2]=show_layers[3]=show_layers[4]=show_layers[5]=show_layers[6]=true;
 		show_layer_over=show_layer_push=show_sprites=show_ffcs=true;
-		cheat_superman=cheats_execute_light=cheats_execute_goto=show_walkflags=show_effectflags=show_ff_scripts=show_hitboxes=show_trigger_prox=show_viewport_follow=gofast=false;
+		cheat_superman=cheats_execute_light=cheats_execute_goto=show_walkflags=show_effectflags=show_ff_scripts=show_hitboxes=show_trigger_prox=show_trigger_log=show_viewport_follow=gofast=false;
 
 		sprite::reset_uid_counter();
 		ResetSaveScreenSettings();
@@ -3028,6 +3043,7 @@ void game_loop()
 			if ( !FFCore.system_suspend[susptSCRIPDRAWCLEAR] ) script_drawing_commands.Clear();
 		}
 		FFCore.runGenericPassiveEngine(SCR_TIMING_START_FRAME);
+		trigger_log_start_frame();
 		
 		if(fadeclk>=0 && !freeze_message)
 		{
@@ -3517,6 +3533,30 @@ enum { tint_r, tint_g, tint_b, tint_bool_dist};
 
 int16_t lastCustomTint[4] = {0,0,0,0}; // The current custom tint information. 0/1/2: R/G/B, 3: Base
 
+static constexpr std::array<double, 256> make_grey_weights(double weight)
+{
+	std::array<double, 256> weights{};
+	for (int i = 0; i < 256; i++)
+		weights[i] = weight * i;
+	return weights;
+}
+
+// Weighted greyscale of a color: 0.299*r + 0.587*g + 0.114*b, rounded down.
+//
+// Written out as plain arithmetic, the result depends on the architecture: arm64 fuses a
+// multiply and an add into one operation, which rounds differently for some colors. So
+// the products come from tables built at compile time, and the sum is done in a fixed
+// order. This gives what x64 always has.
+static int32_t distributed_grey(RGB c)
+{
+	static constexpr auto weights_r = make_grey_weights(0.299);
+	static constexpr auto weights_g = make_grey_weights(0.587);
+	static constexpr auto weights_b = make_grey_weights(0.114);
+
+	volatile double rg = weights_r[c.r] + weights_g[c.g];
+	return rg + weights_b[c.b];
+}
+
 void shiftColour(int32_t rshift, int32_t gshift, int32_t bshift, int32_t base)
 {
 	for(int32_t i=0; i <= 0xEF; i++)
@@ -3525,7 +3565,7 @@ void shiftColour(int32_t rshift, int32_t gshift, int32_t bshift, int32_t base)
 			int32_t grey = (RAMpal[i].r+RAMpal[i].g+RAMpal[i].b)/3;
 			RAMpal[i] = _RGB(grey,grey,grey);
 		} else if(base==baseDISTRIBUTED){//Recolor the palette to distributed greyscale before tinting
-			int32_t grey = 0.299*RAMpal[i].r + 0.587*RAMpal[i].g + 0.114*RAMpal[i].b;
+			int32_t grey = distributed_grey(RAMpal[i]);
 			RAMpal[i] = _RGB(grey,grey,grey);
 		}
 		//Bit-shifting negatives throws errors. If negative, shift in the other direction.
@@ -3555,7 +3595,7 @@ void addColour(int32_t radd, int32_t gadd, int32_t badd, int32_t base)
 			int32_t grey = (RAMpal[i].r+RAMpal[i].g+RAMpal[i].b)/3;
 			RAMpal[i] = _RGB(grey,grey,grey);
 		} else if(base==baseDISTRIBUTED){//Recolor the palette to distributed greyscale before tinting
-			int32_t grey = 0.299*RAMpal[i].r + 0.587*RAMpal[i].g + 0.114*RAMpal[i].b;
+			int32_t grey = distributed_grey(RAMpal[i]);
 			RAMpal[i] = _RGB(grey,grey,grey);
 		}
 		//Add the r/g/b adds to the r/g/b values, clamping between 0 and 255.
@@ -3929,6 +3969,10 @@ int main(int argc, char **argv)
 	int test_zc_arg = used_switch(argc, argv, "-test-zc");
 	if (test_zc_arg > 0)
 		set_headless_mode();
+#ifdef ZC_FUZZ
+	if (zplayer_fuzz_requested())
+		set_headless_mode();
+#endif
 
 	qstdir = (char*)malloc(2048);
 	qstpath = (char*)malloc(2048);
@@ -4412,6 +4456,9 @@ reload_for_replay_file:
 		replay_set_meta("starting_dmap", testingqst_dmap);
 		replay_set_meta("starting_scr", testingqst_screen);
 		replay_set_meta("starting_retsqr", testingqst_retsqr);
+		// The name the editor gave the -test-init-data, so it can show which one a recording used.
+		if (auto init_data_name = get_flag_string("-test-init-data-name"))
+			replay_set_meta("init_data_name", *init_data_name);
 		if (used_switch(argc, argv, "-replay-name") > 0)
 			replay_set_meta("name", argv[replay_name_arg + 1]);
 		if (used_switch(argc, argv, "-replay-script-trace") > 0)
@@ -4876,6 +4923,14 @@ reload_for_replay_file:
 			// If in -test-zc, just bail now.
 			if (zapp_check_switch("-test-zc"))
 				return;
+
+			// With -replay-exit-when-done the replay was stopped by hand to keep playing. Now
+			// that's over too, exit rather than start the replay again. (A reset does restart it.)
+			if (replay_is_exit_when_done() && Quit != qRESET)
+			{
+				Quit = qEXIT;
+				continue;
+			}
 
 			// Replay is over, so jump up to load the real saves.
 			Quit = 0;

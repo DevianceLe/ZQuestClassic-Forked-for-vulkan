@@ -930,6 +930,8 @@ void HeroClass::set_defence(int32_t type, int32_t v)
 
 int32_t HeroClass::get_defence(int32_t type)
 {
+	if(unsigned(type) >= wMax)
+		return edNORMAL;
 	return defence[type];
 }
 
@@ -1939,11 +1941,7 @@ void HeroClass::init()
 	scale = 0;
 	rotation = 0;
 	do_animation = true;
-	if(lift_wpn)
-	{
-		delete lift_wpn;
-		lift_wpn = nullptr;
-	}
+	delete_liftwpn();
 	active_wind = nullptr;
 	clear_platform_ffc();
 	liftclk = 0;
@@ -5644,7 +5642,7 @@ void HeroClass::check_pound_block_layer(int bx, int by, int lyr, weapon* w)
 // 1 Effects, weapon is not ignored or removed
 int32_t HeroClass::defend(weapon *w)
 {
-	int32_t def = conv_edef_unblockable(defence[w->id], w->unblockable);
+	int32_t def = conv_edef_unblockable(get_defence(w->id), w->unblockable);
 	switch(def)
 	{
 		case edNORMAL: return 1;
@@ -7752,7 +7750,22 @@ bool HeroClass::animate(int32_t)
 			--lift_wpn->dead;
 		
 		if(get_qr(qr_LIFTED_WEAPONS_RUN_SCRIPTS))
+		{
+			lift_wpn_in_script = lift_wpn;
 			lift_wpn->run_script(MODE_NORMAL);
+			if(lift_wpn_delete_pending)
+			{
+				// In case the script lifted the weapon again after removing it.
+				if(lift_wpn == lift_wpn_in_script)
+					lift_wpn = nullptr;
+				delete lift_wpn_in_script;
+			}
+			lift_wpn_delete_pending = false;
+			lift_wpn_in_script = nullptr;
+			// The script may have removed, released or thrown the weapon.
+			if(!lift_wpn)
+				goto heroanimate_skip_liftwpn;
+		}
 		
 		if(lift_wpn->dead==0)
 		{
@@ -9364,11 +9377,7 @@ heroanimate_skip_liftwpn:;
 					FFCore.setHeroAction(dying);
 					FFCore.deallocateAllScriptOwned(ScriptType::Global, GLOBAL_SCRIPT_GAME);
 					ALLOFF(true,true);
-					if(lift_wpn)
-					{
-						delete lift_wpn;
-						lift_wpn = nullptr;
-					}
+					delete_liftwpn();
 					GameFlags |= GAMEFLAG_NO_F6;
 					if(!debug_enabled)
 					{
@@ -9907,9 +9916,9 @@ heroanimate_skip_liftwpn:;
 	// Global Combo Effects (AUTO STUFF)
 	bool awarp = false;
 	
-	TriggerData auto_trigger([](combo_trigger const& trig){
+	TriggerData auto_trigger = TriggerData([](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_AUTOMATIC);
-	});
+	}).set_cause("Always");
 	for_some_rpos([&](const rpos_handle_t& rpos_handle) {
 		if (!get_qr(qr_AUTOCOMBO_ANY_LAYER))
 		{
@@ -10655,7 +10664,7 @@ void HeroClass::doMirror(int32_t mirrorid)
 		int32_t destdmap = DMaps[cur_dmap].mirrorDMap;
 		int32_t sourcescr = get_screen_for_world_xy(x, y), sourcedmap = cur_dmap;
 		int32_t offscr = sourcescr - DMaps[cur_dmap].xoff;
-		if(destdmap < 0)
+		if(destdmap < 0 || destdmap >= MAXDMAPS)
 			return;
 		int32_t destscr = DMaps[destdmap].xoff + offscr;
 		if((offscr%16 != destscr%16) || unsigned(destscr) >= 0x80)
@@ -10770,9 +10779,9 @@ void HeroClass::land_on_ground()
 		played_land_sfx = true;
 	}
 
-	TriggerData land_here_trigger([](combo_trigger const& trig){
+	TriggerData land_here_trigger = TriggerData([](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_PLAYERLANDHERE);
-	});
+	}).set_cause("Land Here->");
 	for_each_rpos_stood_on([&](const rpos_handle_t& handle)
 		{
 			auto& cmb = handle.combo();
@@ -10788,9 +10797,9 @@ void HeroClass::land_on_ground()
 	if(!played_land_sfx && QMisc.miscsfx[sfxHERO_LANDS])
 		sfx(QMisc.miscsfx[sfxHERO_LANDS], pan(x));
 	
-	TriggerData land_anywhere_trigger([](combo_trigger const& trig){
+	TriggerData land_anywhere_trigger = TriggerData([](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_PLAYERLANDANYWHERE);
-	});
+	}).set_cause("Land Anywhere->");
 	for_some_rpos([&](const rpos_handle_t& rpos_handle) {
 		land_anywhere_trigger.execute(rpos_handle);
 		return true;
@@ -10901,6 +10910,25 @@ bool HeroClass::do_jump(int32_t jumpid, bool passive)
 	}
 	return true;
 }
+// Deletes the lifted weapon. If that weapon's own script is running, it is only let go of
+// here and is deleted once the script returns: the script engine still uses the weapon and
+// its script state on the way out of the script.
+void HeroClass::delete_liftwpn()
+{
+	if(!lift_wpn) return;
+	if(lift_wpn == lift_wpn_in_script)
+		lift_wpn_delete_pending = true;
+	else delete lift_wpn;
+	lift_wpn = nullptr;
+}
+
+// The same, for a weapon whose running script already released or threw it.
+void HeroClass::delete_liftwpn_in_script()
+{
+	Lwpns.remove(lift_wpn_in_script);
+	lift_wpn_delete_pending = true;
+}
+
 void HeroClass::drop_liftwpn()
 {
 	if(!lift_wpn) return;
@@ -13045,7 +13073,7 @@ bool HeroClass::doattack()
 							if(!trig.trigger_flags.any(trigflags)) return false;
 							return (trig.trigger_flags.get(TRIGFLAG_INVERTMINMAX)
 								? hmrlvl <= trig.triggerlevel : hmrlvl >= trig.triggerlevel);
-						}).execute(handle);
+						}).set_cause("Quake Hammer").execute(handle);
 					});
 				}
 			}
@@ -13167,9 +13195,9 @@ bool isRaftFlag(int32_t flag)
 void handle_lens_triggers(int32_t l_id)
 {
 	bool enabled = valid_item_id(l_id) && (itemsbuf.get(l_id).flags & item_flag6);
-	TriggerData lens_trigger([&](combo_trigger const& trig){
+	TriggerData lens_trigger = TriggerData([&](combo_trigger const& trig){
 		return trig.trigger_flags.get(enabled ? TRIGFLAG_LENSON : TRIGFLAG_LENSOFF);
-	});
+	}).set_cause(enabled ? "Lens On->" : "Lens Off->");
 	for_every_combo([&](const auto& handle) {
 		if (handle.combo().triggers.empty())
 			return;
@@ -21766,10 +21794,10 @@ void HeroClass::checkgenpush(rpos_t rpos)
 	if (rpos == rpos_t::None)
 		return;
 
-	TriggerData push_trigger([&](combo_trigger const& trig){
+	TriggerData push_trigger = TriggerData([&](combo_trigger const& trig){
 		if(!trig.trigger_flags.get(TRIGFLAG_PUSH)) return false;
 		return pushing && !(pushing % zc_max(1,trig.trig_pushtime));
-	});
+	}).set_cause("Push->");
 	for (int layer = 0; layer < 7; ++layer)
 	{
 		auto rpos_handle = get_rpos_handle(rpos, layer);
@@ -21816,10 +21844,10 @@ void HeroClass::checkgenpush()
 
 	if (!get_qr(qr_OLD_FFC_FUNCTIONALITY))
 	{
-		TriggerData push_trigger([&](combo_trigger const& trig){
+		TriggerData push_trigger = TriggerData([&](combo_trigger const& trig){
 			if(!trig.trigger_flags.get(TRIGFLAG_PUSH)) return false;
 			return pushing && !(pushing % zc_max(1,trig.trig_pushtime));
-		});
+		}).set_cause("Push->");
 		for_some_ffcs([&](const ffc_handle_t& ffc_handle) {
 			if (ffcIsAt(ffc_handle, bx, by) || ffcIsAt(ffc_handle, bx2, by2))
 			{
@@ -22081,7 +22109,7 @@ endsigns:
 		// Eat inputs only after trigger succeeds, or plays failure string
 		if (success || trig.fail_msgstr)
 			inputs_to_eat |= trig.triggerbtn;
-	}).execute(comb_handle);
+	}).set_cause("Button press").execute(comb_handle);
 	
 	if (inputs_to_eat)
 		getIntBtnInput(inputs_to_eat, INPUT_PRESS | INPUT_DRUNK);
@@ -22803,7 +22831,7 @@ void HeroClass::handleSpotlights()
 				int32_t trigflag = lbeam_flag(trig.triglbeam);
 				bool trigged = (beam_world.istrig[(int)rpos_handle.rpos]&trigflag);
 				return trig.trigger_flags.get(trigged ? TRIGFLAG_LIGHTON : TRIGFLAG_LIGHTOFF);
-			}).execute(rpos_handle);
+			}).set_cause("Light beam").execute(rpos_handle);
 		}
 	});
 
@@ -22845,7 +22873,7 @@ void HeroClass::handleSpotlights()
 				int32_t trigflag = lbeam_flag(trig.triglbeam);
 				bool trigged = (beam_world.istrig[(int)rpos]&trigflag);
 				return trig.trigger_flags.get(trigged ? TRIGFLAG_LIGHTON : TRIGFLAG_LIGHTOFF);
-			}).execute(ffc_handle);
+			}).set_cause("Light beam").execute(ffc_handle);
 		}
 	});
 
@@ -22979,6 +23007,22 @@ void HeroClass::checktouchblk()
 	}
 }
 
+// Converts a position on the screen next to the hero's screen, toward `dir`, to coordinates within
+// that screen. The coordinate along `dir` is already one on that screen. The other is a world
+// coordinate, so it is made relative to the hero's screen (the one nextscr2 starts from) - the
+// hero may straddle two screens of a region, or be off the screen entirely if a script put them
+// there, so it is also kept on the screen.
+static std::pair<int32_t, int32_t> next_screen_xy(int32_t x, int32_t y, int32_t dir)
+{
+	int screen = screenscrolling ? scrolling_hero_screen : Hero.current_screen;
+	auto [sx, sy] = translate_screen_coordinates_to_world(screen);
+	if (dir == up || dir == down)
+		x -= sx;
+	else
+		y -= sy;
+	return {std::clamp(x, 0, 255), std::clamp(y, 0, 175)};
+}
+
 int32_t HeroClass::nextcombo(int32_t cx, int32_t cy, int32_t cdir)
 {
     switch(cdir)
@@ -23026,7 +23070,8 @@ int32_t HeroClass::nextcombo(int32_t cx, int32_t cy, int32_t cdir)
             break;
         }
 		
-		int32_t cmb = COMBOPOS(cx%256, cy%176);
+		auto [lx, ly] = next_screen_xy(cx, cy, cdir);
+		int32_t cmb = COMBOPOS(lx, ly);
 		return get_canonical_scr(map, screen)->data[cmb];
     }
     
@@ -23080,7 +23125,8 @@ int32_t HeroClass::nextflag(int32_t cx, int32_t cy, int32_t cdir, bool comboflag
             break;
         }
 		
-        int32_t pos = COMBOPOS(cx%256, cy%176);
+        auto [lx, ly] = next_screen_xy(cx, cy, cdir);
+        int32_t pos = COMBOPOS(lx, ly);
         const mapscr* scr = get_canonical_scr(map, screen);
         if (!comboflag)
         {
@@ -23103,9 +23149,9 @@ int32_t HeroClass::nextflag(int32_t cx, int32_t cy, int32_t cdir, bool comboflag
 void HeroClass::checkspecial()
 {
     checktouchblk();
-	static TriggerData enemies_dead_trigger([](combo_trigger const& trig){
+	static TriggerData enemies_dead_trigger = TriggerData([](combo_trigger const& trig){
 		return trig.trigger_flags.get(TRIGFLAG_ENEMIESKILLED);
-	});
+	}).set_cause("Enemies->");
 
 	for_every_base_screen_in_region([&](mapscr* scr, unsigned int region_scr_x, unsigned int region_scr_y) {
 		int screen = scr->screen;
@@ -23814,24 +23860,24 @@ void HeroClass::checkspecial2(int32_t *ls)
 		int32_t yPoses[4] = {ty + 4, ty + 11, ty+(bigHitbox?0:8), ty + 15};
 		
 		bool foundNonStep = false;
-		TriggerData any_step_or_swim_trigger([](combo_trigger const& trig){
+		TriggerData any_step_or_swim_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEP,TRIGFLAG_STEPSENS,TRIGFLAG_SWIMTRIG,TRIGFLAG_SWIMSENSTRIG});
-		});
-		TriggerData any_step_trigger([](combo_trigger const& trig){
+		}).set_cause("Step-> or Swim->");
+		TriggerData any_step_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEP,TRIGFLAG_STEPSENS});
-		});
-		TriggerData sens_step_or_swim_trigger([](combo_trigger const& trig){
+		}).set_cause("Step->");
+		TriggerData sens_step_or_swim_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEPSENS,TRIGFLAG_SWIMSENSTRIG});
-		});
-		TriggerData sens_step_trigger([](combo_trigger const& trig){
+		}).set_cause("Step-> or Swim-> (Sensitive)");
+		TriggerData sens_step_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEPSENS});
-		});
-		TriggerData nonsens_step_or_swim_trigger([](combo_trigger const& trig){
+		}).set_cause("Step-> (Sensitive)");
+		TriggerData nonsens_step_or_swim_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEP,TRIGFLAG_SWIMTRIG});
-		});
-		TriggerData nonsens_step_trigger([](combo_trigger const& trig){
+		}).set_cause("Step-> or Swim->");
+		TriggerData nonsens_step_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.any({TRIGFLAG_STEP});
-		});
+		}).set_cause("Step->");
 		bool swim_triggers = isSwimming();
 		for (auto [rpos, lyrbits] : stepRposes)
 		{
@@ -23920,12 +23966,12 @@ void HeroClass::checkspecial2(int32_t *ls)
 		int yposes[] = {y1,y2,y1,y2};
 		auto rposes = getRposes(x1,y1,x2,y2);
 		bool hit_center_bridge = false;
-		TriggerData dive_trigger([](combo_trigger const& trig){
+		TriggerData dive_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.get(TRIGFLAG_DIVETRIG);
-		});
-		TriggerData dive_sens_trigger([](combo_trigger const& trig){
+		}).set_cause("Dive->");
+		TriggerData dive_sens_trigger = TriggerData([](combo_trigger const& trig){
 			return trig.trigger_flags.get(TRIGFLAG_DIVESENSTRIG);
-		});
+		}).set_cause("Dive-> (Sensitive)");
 		for(auto lyr = 6; lyr >= 0; --lyr)
 		{
 			auto rpos_handle = get_rpos_handle(crpos, lyr);
@@ -24820,6 +24866,9 @@ bool HeroClass::dowarp(const mapscr* scr, int32_t type, int32_t index, int32_t w
 		{
 			wtype = wtWHISTLE;
 			int32_t wind = valid_item_id(whistleitem) ? itemsbuf.get(whistleitem).misc2 : 8;
+			// The whistle's warp ring is an item attribute, which a quest or script can set to anything.
+			if(unsigned(wind) >= NUM_WARP_RINGS)
+				wind = 8;
 			int32_t level=0;
 			
 			if(blowcnt==0)
@@ -24853,7 +24902,32 @@ bool HeroClass::dowarp(const mapscr* scr, int32_t type, int32_t index, int32_t w
 			wscr = home_screen-DMaps[cur_dmap].xoff;
 			break;
 	}
-	
+
+	// Small DMaps can have a negative map offset, so a warp to one of their left
+	// columns lands off the edge of the map. Cancel those. Caves and Cancel Warps
+	// (unless 1.92-style, which turns them into insta-warps) never use the screen.
+	if (wtype != wtCAVE && (wtype != wtNOWARP || get_qr(qr_192b163_WARP)))
+	{
+		int32_t dest_screen = wscr + DMaps[wdmap].xoff;
+		if (unsigned(dest_screen) >= MAPSCRS)
+		{
+			// An auto warp combo tries again every frame, so only log a new destination.
+			static int32_t last_logged_dest = -1;
+			int32_t dest = wdmap * 0x100 + wscr;
+			if (dest != last_logged_dest)
+			{
+				last_logged_dest = dest;
+				Z_error("Warp to screen 0x%02X of DMap %d is outside its map (DMap offset %d). Cancelling the warp.\n",
+					wscr, wdmap, DMaps[wdmap].xoff);
+			}
+			didpit=false;
+			update_subscreens();
+			warp_sound = 0;
+			is_warping = false;
+			return false;
+		}
+	}
+
 	bool intradmap = (wdmap == cur_dmap);
 	int32_t olddmap = cur_dmap;
 	rehydratelake(type!=wtSCROLL);
@@ -26605,7 +26679,8 @@ bool HeroClass::nextcombo_wf(int32_t d2)
     // check lower half of combo
     cy += 8;
     
-    int32_t cmb = COMBOPOS(cx%256, cy%176);    
+    std::tie(cx, cy) = next_screen_xy(cx, cy, d2);
+    int32_t cmb = COMBOPOS(cx, cy);
     const newcombo* c = &combobuf[scr->data[cmb]];
     bool dried = iswater_type(c->type) && DRIEDLAKE;
     bool swim = iswater_type(c->type) && (current_item(itype_flippers)) && !dried;
@@ -26625,6 +26700,10 @@ bool HeroClass::nextcombo_wf(int32_t d2)
     }
     else
     {
+        // There is no combo after the last one.
+        if (cmb == 175)
+            return false;
+
         c = &combobuf[scr->data[++cmb]];
         dried = iswater_type(c->type) && DRIEDLAKE;
         swim = iswater_type(c->type) && (current_item(itype_flippers)) && !dried;
@@ -29817,7 +29896,7 @@ void dospecialmoney(mapscr* scr, int32_t index)
 		 game->change_drupy(0);   
 	    }
         }
-        msgstr::do_new(scr, QMisc.info[scr->catchall].str[priceindex]);
+        msgstr::do_new(scr, QMisc.get_info(scr->catchall).str[priceindex]);
         clear_bitmap(pricesdisplaybuf);
         set_clip_state(pricesdisplaybuf, 1);
         items.del(0);
@@ -30561,7 +30640,7 @@ bool HeroClass::checkitems(int32_t index)
 				((item*)items.spr(i))->pickup=ipDUMMY+ipFADE;
 		}
 		
-		int32_t slot = game->fillBottle(QMisc.bottle_shop_types[item_scr->catchall].fill[PriceIndex]);
+		int32_t slot = game->fillBottle(QMisc.get_bottle_shop(item_scr->catchall).fill[PriceIndex]);
 		id2 = find_bottle_for_slot(slot);
 		itm = &get_item_data(id2);
 		ptr->id = id2;
@@ -30805,10 +30884,10 @@ bool HeroClass::checkitems(int32_t index)
 				switch(item_scr->room)
 				{
 					case rSHOP:
-						shop_pstr = QMisc.shop[item_scr->catchall].str[PriceIndex];
+						shop_pstr = QMisc.get_shop(item_scr->catchall).str[PriceIndex];
 						break;
 					case rBOTTLESHOP:
-						shop_pstr = QMisc.bottle_shop_types[item_scr->catchall].str[PriceIndex];
+						shop_pstr = QMisc.get_bottle_shop(item_scr->catchall).str[PriceIndex];
 						break;
 				}
 			}
@@ -30915,7 +30994,9 @@ bool HeroClass::checkitems(int32_t index)
 		//general item pickup message
 		//show the info string
 		//non-held
-		int32_t shop_pstr = ( item_scr->room == rSHOP && PriceIndex>=0 && QMisc.shop[item_scr->catchall].str[PriceIndex] > 0 ) ? QMisc.shop[item_scr->catchall].str[PriceIndex] : 0;
+		int32_t shop_pstr = 0;
+		if (item_scr->room == rSHOP && PriceIndex >= 0)
+			shop_pstr = std::max<int32_t>(0, QMisc.get_shop(item_scr->catchall).str[PriceIndex]);
 		if ( (pstr > 0 && pstr < msg_count) || (shop_pstr > 0 && shop_pstr < msg_count) )
 		{
 			if ( (pstr > 0 && pstr < msg_count) && ( (!(pstr_flags&itemdataPSTRING_IP_HOLDUP)) && ( pstr_flags&itemdataPSTRING_NOMARK || pstr_flags&itemdataPSTRING_ALWAYS || (!(FFCore.GetItemMessagePlayed(id2))) ) ) )
@@ -32743,6 +32824,10 @@ void HeroClass::explode(int32_t type)
 	static byte herotilebuf[256];
 	int32_t ltile=0;
 	int32_t lflip=0;
+	// Scripts can set any tile. Like drawing it, exploding one that doesn't exist does nothing.
+	if ((unsigned)tile >= NEWMAXTILES)
+		return;
+
 	unpack_tile(newtilebuf, tile, flip, true);
 	memcpy(herotilebuf, unpackbuf, 256);
 	for(int32_t i=0; i<16; ++i)

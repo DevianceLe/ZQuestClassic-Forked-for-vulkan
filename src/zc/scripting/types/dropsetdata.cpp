@@ -4,6 +4,7 @@
 #include "components/zasm/defines.h"
 #include "zc/ffscript.h"
 #include "zc/scripting/arrays.h"
+#include "zc/scripting/zasm_check.h"
 #include <cstdint>
 
 extern refInfo *ri;
@@ -19,7 +20,7 @@ int32_t dropsetdata_get_register(int32_t reg)
 	{
 		case DROPSETCHOOSE:
 		{
-			if((unsigned)ri->dropsetdataref() > MAXITEMDROPSETS)
+			if((unsigned)ri->dropsetdataref() >= MAXITEMDROPSETS)
 			{
 				Z_scripterrlog("Invalid dropset pointer %d\n", ri->dropsetdataref());
 				ret = -10000;
@@ -30,7 +31,7 @@ int32_t dropsetdata_get_register(int32_t reg)
 		}
 		case DROPSETNULLCHANCE:
 		{
-			if((unsigned)ri->dropsetdataref() > MAXITEMDROPSETS)
+			if((unsigned)ri->dropsetdataref() >= MAXITEMDROPSETS)
 			{
 				Z_scripterrlog("Invalid dropset pointer %d\n", ri->dropsetdataref());
 				ret = -10000;
@@ -41,7 +42,7 @@ int32_t dropsetdata_get_register(int32_t reg)
 		}
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -53,7 +54,7 @@ void dropsetdata_set_register(int32_t reg, int32_t value)
 	{
 		case DROPSETNULLCHANCE:
 		{
-			if((unsigned)ri->dropsetdataref() > MAXITEMDROPSETS)
+			if((unsigned)ri->dropsetdataref() >= MAXITEMDROPSETS)
 			{
 				Z_scripterrlog("Invalid dropset pointer %d\n", ri->dropsetdataref());
 				break;
@@ -63,7 +64,7 @@ void dropsetdata_set_register(int32_t reg, int32_t value)
 		}
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 }
 

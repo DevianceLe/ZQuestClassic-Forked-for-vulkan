@@ -3,6 +3,7 @@
 #include "components/zasm/defines.h"
 #include "zc/ffscript.h"
 #include "zc/scripting/arrays.h"
+#include "zc/scripting/zasm_check.h"
 
 extern refInfo *ri;
 extern int32_t sarg1;
@@ -120,7 +121,7 @@ int32_t weapondata_get_register(int32_t reg)
 			ret = data ? 10000 : 0;
 			break;
 
-		default: NOTREACHED();
+		default: ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -248,7 +249,7 @@ void weapondata_set_register(int32_t reg, int32_t value)
 		case WEAPDATA_VALID:
 			break;
 		
-		default: NOTREACHED();
+		default: ZASM_NOTREACHED();
 	}
 }
 
@@ -309,7 +310,7 @@ static ArrayRegistrar WEAPDATA_WEAP_FLAGS_registrar(WEAPDATA_WEAP_FLAGS, []{
 static ArrayRegistrar WEAPDATA_BURN_SPRITES_registrar(WEAPDATA_BURN_SPRITES, []{
 	static ScriptingArray_ObjectMemberCArray<weapon_data, &weapon_data::burnsprs> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundWord);
+	impl.setValueTransform(transforms::vbound<0, MAXSPRITES-1>);
 	return &impl;
 }());
 

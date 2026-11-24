@@ -1,5 +1,4 @@
-#ifndef ZC_SYS_H_
-#define ZC_SYS_H_
+#pragma once
 
 #include "core/zdefs.h"
 #include "core/jwinfsel.h"
@@ -183,6 +182,7 @@ int32_t onShowLayerE();
 int32_t onShowFFScripts();
 int32_t onShowHitboxes();
 int32_t onShowTriggerProx();
+int32_t onShowTriggerLog();
 int32_t onShowViewportFollow();
 int32_t onShowInfoOpacity();
 
@@ -193,4 +193,3 @@ extern int32_t midi_strict;
 #ifdef ALLEGRO_MACOSX
 extern int32_t midi_strict; //L
 #endif
-#endif                                                      // _ZC_SYS_H_

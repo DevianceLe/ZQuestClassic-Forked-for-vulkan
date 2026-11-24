@@ -16,7 +16,11 @@
 #include "zc/decorations.h"
 #include "drawing.h"
 #include "zc/combos.h"
+#include "zc/combo_trigger_log.h"
 #include "base/zc_math.h"
+#include "base/util.h"
+#include <fmt/format.h>
+#include <fmt/ranges.h>
 #include "core/qrs.h"
 #include "core/mapscr.h"
 #include "core/misctypes.h"
@@ -80,23 +84,14 @@ bool weapon::no_collision() const
 	return false;
 }
 
-static bool MatchComboTrigger(weapon *w, combo_trigger const& trig)
+// `why`, if given, is set to why a trigger that's set off by this kind of weapon wasn't set off
+// by this one, for the trigger log.
+static bool MatchComboTrigger(weapon *w, combo_trigger const& trig, std::string* why = nullptr)
 {
 	if(screenIsScrolling()) return false;
 	if(w->no_triggers()) return false;
 	int32_t wid = (w->useweapon > 0) ? w->useweapon : w->id;
 	
-	if(w->z > 0 && trig.trigger_flags.get(TRIGFLAG_ONLY_GROUND_WPN))
-		return false; // Air based weapon shouldn't trigger ground-only combo
-	if(w->isLWeapon) //min/max level check
-	{
-		//Nothing should ever count as 'level 0'
-		int lv = w->level, tlv = trig.triggerlevel;
-		if(lv<1) lv=1;
-		if(tlv<1) tlv=1;
-		if(!(trig.trigger_flags.get(TRIGFLAG_INVERTMINMAX) ? lv <= tlv : lv >= tlv))
-			return false;
-	}
 	int trigflag = -1;
 	switch(wid)
 	{
@@ -154,9 +149,46 @@ static bool MatchComboTrigger(weapon *w, combo_trigger const& trig)
 		case wRefFire2: trigflag = TRIGFLAG_LWREFFIRE2; break;
 		default: return false;
 	}
-	if(trigflag > -1)
-		return trig.trigger_flags.get(trigflag);
-	return false;
+	if(!trig.trigger_flags.get(trigflag))
+		return false;
+
+	if(w->z > 0 && trig.trigger_flags.get(TRIGFLAG_ONLY_GROUND_WPN))
+	{
+		// Air based weapon shouldn't trigger ground-only combo
+		if(why)
+			*why = "it's only set off by weapons on the ground, and this one is in the air";
+		return false;
+	}
+	if(w->isLWeapon) //min/max level check
+	{
+		//Nothing should ever count as 'level 0'
+		int lv = w->level, tlv = trig.triggerlevel;
+		if(lv<1) lv=1;
+		if(tlv<1) tlv=1;
+		bool invert = trig.trigger_flags.get(TRIGFLAG_INVERTMINMAX);
+		if(!(invert ? lv <= tlv : lv >= tlv))
+		{
+			if(why)
+				*why = fmt::format("the weapon is level {}, and it needs level {} or {}", lv, tlv, invert ? "lower" : "higher");
+			return false;
+		}
+	}
+	return true;
+}
+
+// Show trigger log cheat: report the triggers on a combo a weapon touched that are set off by its
+// kind of weapon, but not by this one.
+static void trigger_log_weapon_misses(const combined_handle_t& handle, weapon* w)
+{
+	if(!show_trigger_log) return;
+	int cid = handle.data();
+	auto const& triggers = combobuf[cid].triggers;
+	for(size_t idx = 0; idx < triggers.size(); ++idx)
+	{
+		std::string why;
+		if(!MatchComboTrigger(w, triggers[idx], &why) && !why.empty())
+			trigger_log_note(handle, cid, idx, w, fmt::format("didn't fire: {}", why));
+	}
 }
 
 int FindComboTriggerMatch(weapon *w, int combo_id, int start_idx)
@@ -192,10 +224,8 @@ void killgenwpn(weapon* w)
 void do_generic_combo(const rpos_handle_t& rpos_handle, weapon *w, [[maybe_unused]] int32_t wid, 
 	int32_t cid, [[maybe_unused]] int32_t flag, [[maybe_unused]] int32_t flag2, int32_t ft, [[maybe_unused]] bool single16) //WID currently is unused; if you add code relating to it, make sure to check if it's greater than 0
 {
-	if ( combobuf[cid].type < cTRIGGERGENERIC && !(combobuf[cid].usrflags&cflag9 )  )  //Script combos need an 'Engine' flag
-	{ 
+	if (!combobuf[cid].runs_generic_effects())
 		return;
-	}
 
 	int32_t pos = rpos_handle.pos;
 	int32_t layer = rpos_handle.layer;
@@ -327,10 +357,8 @@ void do_generic_combo(const rpos_handle_t& rpos_handle, weapon *w, [[maybe_unuse
 
 void do_generic_combo_ffc(weapon *w, const ffc_handle_t& ffc_handle, int32_t cid, int32_t ft)
 {
-	if ( combobuf[cid].type < cTRIGGERGENERIC && !(combobuf[cid].usrflags&cflag9 )  )  //Script combos need an 'Engine' flag
-	{ 
+	if (!combobuf[cid].runs_generic_effects())
 		return;
-	} 
 	ft = vbound(ft, minSECRET_TYPE, maxSECRET_TYPE); //sanity guard to legal secret types. 44 to 127 are unused
 	ffcdata* ffc = ffc_handle.ffc;
 	if ( !w->ffcs_checked.contains(ffc) || (combobuf[cid].usrflags&cflag5) ) 
@@ -448,16 +476,21 @@ static void MatchComboTrigger2(weapon *w, int32_t bx, int32_t by, int32_t layer 
 			for_every_ffc([&](const ffc_handle_t& ffc_handle) {
 				if (ffcIsAt(ffc_handle, bx, by))
 				{
+					trigger_log_weapon_misses(ffc_handle, w);
 					int trig_idx = -1;
 					auto cid = ffc_handle.data();
 					do
 					{
 						trig_idx = FindComboTriggerMatch(w, cid, trig_idx + 1);
-						if(trig_idx >= 0)
-							if(do_trigger_combo(ffc_handle, trig_idx, 0, w))
-								if(combobuf[cid].triggers[trig_idx].trigger_flags.get(TRIGFLAG_CANCEL_TRIGGER))
-									break;
-					} while(ffc_handle.data() == cid && trig_idx >= 0);
+						if(trig_idx < 0)
+							break;
+						// Each trigger runs at most once a frame; a later look reuses whether it fired.
+						auto [it, first] = w->ffc_triggers_this_frame.try_emplace({ffc_handle.ffc, cid, trig_idx}, false);
+						if(first)
+							it->second = do_trigger_combo(ffc_handle, trig_idx, 0, w);
+						if(it->second && combobuf[cid].triggers[trig_idx].trigger_flags.get(TRIGFLAG_CANCEL_TRIGGER))
+							break;
+					} while(ffc_handle.data() == cid);
 				}
 			});
 		}
@@ -469,18 +502,21 @@ static void MatchComboTrigger2(weapon *w, int32_t bx, int32_t by, int32_t layer 
 	bx=TRUNCATE_TILE(bx);
 	by=TRUNCATE_TILE(by);
 	auto rpos_handle = get_rpos_handle_for_world_xy(bx, by, layer);
+	trigger_log_weapon_misses(rpos_handle, w);
 	int32_t cid = rpos_handle.data();
 	int trig_idx = -1;
 	do
 	{
 		trig_idx = FindComboTriggerMatch(w, cid, trig_idx + 1);
-		if(trig_idx >= 0)
-		{
-			if(do_trigger_combo(rpos_handle, trig_idx, 0, w))
-				if(combobuf[cid].triggers[trig_idx].trigger_flags.get(TRIGFLAG_CANCEL_TRIGGER))
-					break;
-		}
-	} while(rpos_handle.data() == cid && trig_idx >= 0);
+		if(trig_idx < 0)
+			break;
+		// Each trigger runs at most once a frame; a later look reuses whether it fired.
+		auto [it, first] = w->rpos_triggers_this_frame.try_emplace({layer, rpos_handle.rpos, cid, trig_idx}, false);
+		if(first)
+			it->second = do_trigger_combo(rpos_handle, trig_idx, 0, w);
+		if(it->second && combobuf[cid].triggers[trig_idx].trigger_flags.get(TRIGFLAG_CANCEL_TRIGGER))
+			break;
+	} while(rpos_handle.data() == cid);
 }
 
 static bool triggerfire(int x, int y, weapon* w, bool setflag, bool any, bool strong, bool magic, bool divine)
@@ -504,6 +540,42 @@ static bool triggerfire(int x, int y, weapon* w, bool setflag, bool any, bool st
 		ret = ret||trigger_secrets_if_flag(x,y,mfDIVINEFIRE,setflag);
 
 	std::set<rpos_t> rposes({COMBOPOS_REGION_B(x,y),COMBOPOS_REGION_B(x,y+15),COMBOPOS_REGION_B(x+15,y),COMBOPOS_REGION_B(x+15,y+15)});
+	// Show trigger log cheat: report the triggers set off by fire that this fire isn't the kind of.
+	// Named like the burn trigger's own lines: by "Burning", and wptr, since burning may not
+	// count as a weapon.
+	auto log_fire_misses = [&](const combined_handle_t& handle) {
+		if(!show_trigger_log) return;
+		TriggerLogCause log_cause([]{ return std::string("Burning"); });
+		static const std::pair<int, const char*> fire_kinds[] = {
+			{TRIGFLAG_ANYFIRE, "Any Fire"}, {TRIGFLAG_STRONGFIRE, "Strong Fire"},
+			{TRIGFLAG_MAGICFIRE, "Magic Fire"}, {TRIGFLAG_DIVINEFIRE, "Divine Fire"},
+		};
+		int cid = handle.data();
+		auto const& triggers = combobuf[cid].triggers;
+		for(size_t idx = 0; idx < triggers.size(); ++idx)
+		{
+			auto const& trig = triggers[idx];
+			std::vector<std::string> needs, is;
+			bool matches = false;
+			for(auto [flag, name] : fire_kinds)
+			{
+				if(trig.trigger_flags.get(flag))
+					needs.push_back(name);
+				if(util::contains(trigflags, flag))
+				{
+					is.push_back(name);
+					matches |= trig.trigger_flags.get(flag);
+				}
+			}
+			if(needs.empty())
+				continue;
+			if(!matches)
+				trigger_log_note(handle, cid, idx, wptr, fmt::format("didn't fire: it's set off by {}, and this fire is {}",
+					fmt::join(needs, " or "), fmt::join(is, ", ")));
+			else if(w->z > 0 && trig.trigger_flags.get(TRIGFLAG_ONLY_GROUND_WPN))
+				trigger_log_note(handle, cid, idx, wptr, "didn't fire: it's only set off by weapons on the ground, and this one is in the air");
+		}
+	};
 	TriggerData burn_trigger = TriggerData([&](combo_trigger const& trig){
 		if (w->z > 0 && trig.trigger_flags.get(TRIGFLAG_ONLY_GROUND_WPN))
 			return false; // Air based weapon shouldn't trigger ground-only combo
@@ -511,7 +583,7 @@ static bool triggerfire(int x, int y, weapon* w, bool setflag, bool any, bool st
 			if(trig.trigger_flags.get(flag))
 				return true;
 		return false;
-	}).set_weapon(wptr);
+	}).set_weapon(wptr).set_cause("Burning");
 	for(int q = 0; q < 7; ++q)
 	{
 		for (rpos_t rpos : rposes)
@@ -520,6 +592,7 @@ static bool triggerfire(int x, int y, weapon* w, bool setflag, bool any, bool st
 				continue;
 
 			auto rpos_handle = get_rpos_handle(rpos, q);
+			log_fire_misses(rpos_handle);
 			burn_trigger.execute(rpos_handle);
 		}
 	}
@@ -527,6 +600,7 @@ static bool triggerfire(int x, int y, weapon* w, bool setflag, bool any, bool st
 	for_every_ffc([&](const ffc_handle_t& ffc_handle) {
 		ffcdata& ffc = *ffc_handle.ffc;
 		if(!ffc.collide(x,y,16,16)) return;
+		log_fire_misses(ffc_handle);
 		burn_trigger.execute(ffc_handle);
 	});
 
@@ -3468,6 +3542,8 @@ void weapon::limited_animate()
 bool weapon::animate([[maybe_unused]] int32_t index)
 {
 	update_current_screen();
+	rpos_triggers_this_frame.clear();
+	ffc_triggers_this_frame.clear();
 	if(weapon_start_frame)
 	{
 		if(get_qr(qr_WEAPONS_EXTRA_SPAWN_FRAME))

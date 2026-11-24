@@ -7,6 +7,7 @@
 #include "zc/guys.h"
 #include "zc/scripting/arrays.h"
 #include "zc/scripting/types/musicdata.h"
+#include "zc/scripting/zasm_check.h"
 #include "zc/zc_sys.h"
 #include "zc/scripting/script_object.h"
 
@@ -574,7 +575,7 @@ int32_t mapdata_get_register(int32_t reg)
 		}
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -644,40 +645,6 @@ void mapdata_set_register(int32_t reg, int32_t value)
 		else if (mapscr *m = ResolveMapdataScr(GET_REF(mapdataref))) \
 		{ \
 			m->member[indx] = vbound((value / 10000),0,255); \
-		} \
-		break; \
-	}\
-
-	#define SET_MAPDATA_LAYER_INDEX(member, indexbound) \
-	{ \
-		int32_t indx = GET_D(rINDEX) / 10000; \
-		if ( quest_format[vFFScript] < 11 ) ++indx; \
-		if (BC::checkIndex(indx, 1, indexbound) != SH::_NoError) \
-		{ \
-		} \
-		else if (mapscr *m = ResolveMapdataScr(GET_REF(mapdataref))) \
-		{ \
-			m->member[indx-1] = vbound((value / 10000),0,255); \
-		} \
-		break; \
-	} \
-
-	#define SET_MAPDATA_LAYERSCREEN_INDEX(member, indexbound) \
-	{ \
-		int32_t indx = GET_D(rINDEX) / 10000; \
-		if ( quest_format[vFFScript] < 11 ) ++indx; \
-		int32_t scrn_id = value/10000; \
-		if (BC::checkIndex(indx, 1, indexbound) != SH::_NoError) \
-		{ \
-		} \
-		else if ( scrn_id > MAPSCRS ) \
-		{ \
-			Z_scripterrlog("Script attempted to use a mapdata->LayerScreen[%d].\n",scrn_id); \
-			Z_scripterrlog("Valid Screen values are (0) through (%d).\n",MAPSCRS); \
-		} \
-		else if (mapscr *m = ResolveMapdataScr(GET_REF(mapdataref))) \
-		{ \
-			m->member[indx-1] = vbound((scrn_id),0,MAPSCRS); \
 		} \
 		break; \
 	}\
@@ -903,7 +870,20 @@ void mapdata_set_register(int32_t reg, int32_t value)
 		case MAPDATASTAIRY: 		SET_MAPDATA_VAR_BYTE(stairy); break;	//b
 		case MAPDATASTRING:		SET_MAPDATA_VAR_INT32(str); break;		//w
 		case MAPDATATIMEDWARPTICS: 	SET_MAPDATA_VAR_INT32(timedwarptics); break;	//W
-		case MAPDATAUNDERCOMBO: 	SET_MAPDATA_VAR_INT32(undercombo); break;	//w
+		case MAPDATAUNDERCOMBO:
+		{
+			if (mapscr *m = ResolveMapdataScr(GET_REF(mapdataref)))
+			{
+				int cid = value/10000;
+				if (unsigned(cid) >= MAXCOMBOS)
+				{
+					scripting_log_error_with_context("Invalid combo: {}", cid);
+					break;
+				}
+				m->undercombo = cid;
+			}
+			break;
+		}
 		case MAPDATAUNDERCSET:	 	SET_MAPDATA_VAR_BYTE(undercset); break; //b
 		case MAPDATAVALID:		SET_MAPDATA_VAR_BYTE(valid); break;		//b
 		case MAPDATAVIEWX: 		break;//SET_MAPDATA_VAR_INT32(viewX, "ViewX"); break;	//W
@@ -940,7 +920,7 @@ void mapdata_set_register(int32_t reg, int32_t value)
 		}
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 }
 
@@ -1197,14 +1177,14 @@ static ArrayRegistrar MAPDATASIDEWARPSC_registrar(MAPDATASIDEWARPSC, []{
 static ArrayRegistrar MAPDATASIDEWARPDMAP_registrar(MAPDATASIDEWARPDMAP, []{
 	static ScriptingArray_ObjectMemberCArray<mapscr, &mapscr::sidewarpdmap> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXDMAPS>);
 	return &impl;
 }());
 
 static ArrayRegistrar MAPDATASECRETCOMBO_registrar(MAPDATASECRETCOMBO, []{
 	static ScriptingArray_ObjectMemberCArray<mapscr, &mapscr::secretcombo> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXCOMBOS>);
 	return &impl;
 }());
 
@@ -1260,7 +1240,7 @@ static ArrayRegistrar MAPDATAWARPRETY_registrar(MAPDATAWARPRETY, []{
 static ArrayRegistrar MAPDATATILEWARPDMAP_registrar(MAPDATATILEWARPDMAP, []{
 	static ScriptingArray_ObjectMemberCArray<mapscr, &mapscr::tilewarpdmap> impl;
 	impl.setMul10000(true);
-	impl.setValueTransform(transforms::vboundInt);
+	impl.setValueTransform(transforms::validate<MAXDMAPS>);
 	return &impl;
 }());
 
@@ -1597,9 +1577,6 @@ static ArrayRegistrar MAPDATALAYERMAP_registrar(MAPDATALAYERMAP, []{
 		[](int ref, int index) -> int {
 			if (auto scr = checkMapDataScr(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				return scr->layermap[index - 1];
 			}
 
@@ -1608,8 +1585,12 @@ static ArrayRegistrar MAPDATALAYERMAP_registrar(MAPDATALAYERMAP, []{
 		[](int ref, int index, int value){
 			if (auto mapdata = checkMapData(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
+				// Loading the screen reads the layer from this map.
+				if (value > map_count)
+				{
+					scripting_log_error_with_context("Invalid map: {} - there are {} maps", value, map_count);
+					return false;
+				}
 
 				mapdata->scr->layermap[index - 1] = value;
 				if (mapdata->current())
@@ -1620,6 +1601,8 @@ static ArrayRegistrar MAPDATALAYERMAP_registrar(MAPDATALAYERMAP, []{
 			return false;
 		}
 	);
+	impl.compatZeroIndexedGetter();
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::vboundByte);
@@ -1636,9 +1619,6 @@ static ArrayRegistrar MAPDATALAYERSCREEN_registrar(MAPDATALAYERSCREEN, []{
 		[](int ref, int index) -> int {
 			if (auto scr = checkMapDataScr(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				return scr->layerscreen[index - 1];
 			}
 
@@ -1647,9 +1627,6 @@ static ArrayRegistrar MAPDATALAYERSCREEN_registrar(MAPDATALAYERSCREEN, []{
 		[](int ref, int index, int value){
 			if (auto mapdata = checkMapData(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				mapdata->scr->layerscreen[index - 1] = value;
 				if (mapdata->current())
 					mark_current_region_handles_dirty();
@@ -1659,6 +1636,8 @@ static ArrayRegistrar MAPDATALAYERSCREEN_registrar(MAPDATALAYERSCREEN, []{
 			return false;
 		}
 	);
+	impl.compatZeroIndexedGetter();
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::validate<MAPSCRS>);
@@ -1675,9 +1654,6 @@ static ArrayRegistrar MAPDATALAYEROPACITY_registrar(MAPDATALAYEROPACITY, []{
 		[](int ref, int index) -> int {
 			if (auto scr = checkMapDataScr(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				return scr->layeropacity[index - 1];
 			}
 
@@ -1686,9 +1662,6 @@ static ArrayRegistrar MAPDATALAYEROPACITY_registrar(MAPDATALAYEROPACITY, []{
 		[](int ref, int index, int value){
 			if (auto mapdata = checkMapData(ref))
 			{
-				if (quest_format[vFFScript] < 11)
-					index++;
-
 				mapdata->scr->layeropacity[index - 1] = value;
 				return true;
 			}
@@ -1696,6 +1669,8 @@ static ArrayRegistrar MAPDATALAYEROPACITY_registrar(MAPDATALAYEROPACITY, []{
 			return false;
 		}
 	);
+	impl.compatZeroIndexedGetter();
+	impl.compatZeroIndexedSetter();
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.setValueTransform(transforms::vboundByte);
@@ -1821,6 +1796,7 @@ static ArrayRegistrar MAPDATAFFDATA_registrar(MAPDATAFFDATA, []{
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
 	impl.skipIndexCheck();
+	impl.setValueTransform(transforms::validate<MAXCOMBOS>);
 	return &impl;
 }());
 

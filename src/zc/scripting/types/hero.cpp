@@ -7,6 +7,7 @@
 #include "zc/ffscript.h"
 #include "zc/render.h"
 #include "zc/scripting/arrays.h"
+#include "zc/scripting/zasm_check.h"
 
 #include <cstdint>
 
@@ -559,7 +560,7 @@ int32_t hero_get_register(int32_t reg)
 			break;
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -684,11 +685,7 @@ void hero_set_register(int32_t reg, int32_t value)
 			break;
 		case HEROLIFTEDWPN:
 		{
-			if(Hero.lift_wpn)
-			{
-				delete Hero.lift_wpn;
-				Hero.lift_wpn = nullptr;
-			}
+			Hero.delete_liftwpn();
 			if(value)
 			{
 				if(weapon* wpn = checkLWpn(value))
@@ -989,9 +986,14 @@ void hero_set_register(int32_t reg, int32_t value)
 			break;
 		case LINKDIR:
 		{
+			// The Hero's tiles only have the 4 cardinal directions, and are indexed by it.
+			int32_t d = value/10000;
+			if (BC::checkBounds(d, up, right, "Hero->Dir") != SH::_NoError)
+				break;
+
 			//Hero->setDir() calls reset_hookshot(), which removes the sword sprite.. O_o
-			if(Hero.getAction() == attacking || Hero.getAction() == sideswimattacking) Hero.dir = (value/10000);
-			else Hero.setDir(value/10000);
+			if(Hero.getAction() == attacking || Hero.getAction() == sideswimattacking) Hero.dir = d;
+			else Hero.setDir(d);
 
 			break;
 		}
@@ -1472,7 +1474,7 @@ void hero_set_register(int32_t reg, int32_t value)
 		break;
 
 		default:
-			NOTREACHED();
+			ZASM_NOTREACHED();
 	}
 }
 
@@ -1610,7 +1612,7 @@ static ArrayRegistrar LINKHITBY_registrar(LINKHITBY, []{
 				case 15:
 					return Hero.gethitHeroUID(index); //do not multiply by 10000! UIDs are not *10000!
 
-				default: NOTREACHED();
+				default: ZASM_NOTREACHED();
 			}
 		},
 		[](int, int, int) {

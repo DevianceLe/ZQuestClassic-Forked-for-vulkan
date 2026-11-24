@@ -1,4 +1,5 @@
 #include "zc/commands.h"
+#include "zc/fuzz.h"
 #include "core/misctypes.h"
 #include "core/qst.h"
 #include "base/zapp.h"
@@ -68,6 +69,11 @@ void do_extract_zasm_command(const char* quest_path)
 
 void zplayer_handle_commands()
 {
+#ifdef ZC_FUZZ
+	if (zplayer_fuzz_requested())
+		zplayer_fuzz_main();
+#endif
+
 	int test_zc_arg = zapp_check_switch("-test-zc");
 	if (test_zc_arg)
 	{
@@ -76,6 +82,9 @@ void zplayer_handle_commands()
 
 		bool verbose = zapp_check_switch("-verbose") || zapp_check_switch("-v");
 		bool success = true;
+
+		extern TestResults test_packfile(bool);
+		if (!run_tests(test_packfile, "test_packfile", verbose)) success = false;
 
 		extern TestResults test_saves(bool);
 		if (!run_tests(test_saves, "test_saves", verbose)) success = false;
@@ -108,6 +117,9 @@ void zplayer_handle_commands()
 
 		extern TestResults test_lightbeam(bool);
 		if (!run_tests(test_lightbeam, "test_lightbeam", verbose)) success = false;
+
+		extern TestResults test_trigger_graph(bool);
+		if (!run_tests(test_trigger_graph, "test_trigger_graph", verbose)) success = false;
 
 		extern TestResults test_qst_cfg_header(bool);
 		if (!run_tests(test_qst_cfg_header, "test_qst_cfg_header", verbose)) success = false;
@@ -190,6 +202,15 @@ void zplayer_handle_commands()
 		int map = zapp_get_arg_int(dump_screen_arg + 2);
 		int screen = zapp_get_arg_int(dump_screen_arg + 3);
 		do_dump_screen_command(path.c_str(), map, screen);
+	}
+
+	int dump_region_arg = zapp_check_switch("-dump-region", {"qst", "map", "screen"});
+	if (dump_region_arg > 0)
+	{
+		std::string path = zapp_get_arg_string(dump_region_arg + 1);
+		int map = zapp_get_arg_int(dump_region_arg + 2);
+		int screen = zapp_get_arg_int(dump_region_arg + 3);
+		do_dump_region_command(path.c_str(), map, screen);
 	}
 
 	int extract_zasm_arg = zapp_check_switch("-extract-zasm", {"qst"});

@@ -1161,8 +1161,16 @@ static void draw_tile16_unified_translucent(BITMAP* dest, int cl, int ct, int cr
 }
 
 
+// The 8x8 functions take a tile quarter, so there are 4 per tile.
+static bool valid_tile8(int32_t tile)
+{
+	return tile >= 0 && tile < NEWMAXTILES*4;
+}
+
 void puttiletranslucent8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t flip,[[maybe_unused]] int32_t opacity)
 {
+	if(!valid_tile8(tile))
+		return;
     if(x<-7 || y<-7)
         return;
         
@@ -1255,6 +1263,8 @@ void puttiletranslucent8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t c
 
 void overtiletranslucent8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t flip,[[maybe_unused]] int32_t opacity)
 {
+	if(!valid_tile8(tile))
+		return;
     if(x<-7 || y<-7)
         return;
         
@@ -2082,7 +2092,7 @@ void putcombotranslucent(BITMAP* dest,int32_t x,int32_t y,int32_t cid,int32_t cs
 	auto& c = combobuf[cid];
     int32_t drawtile=combo_tile(c, x, y);
     
-    if(!c.using_cs2() || (newtilebuf[drawtile].format>tf4Bit))
+    if(!c.using_cs2() || unsigned(drawtile) >= NEWMAXTILES || (newtilebuf[drawtile].format>tf4Bit))
         puttiletranslucent16(dest,drawtile,x,y,cset,c.flip,opacity);
     else
     {
@@ -2121,7 +2131,7 @@ void overcomboblocktranslucent(BITMAP *dest, int32_t x, int32_t y, int32_t cid, 
             if(tiletodraw%TILES_PER_ROW<woff) // Past the end?
                 tiletodraw+=TILES_PER_ROW*c.skipanimy;
                 
-            if(!c.using_cs2() || (newtilebuf[tiletodraw].format>tf4Bit))
+            if(!c.using_cs2() || unsigned(tiletodraw) >= NEWMAXTILES || (newtilebuf[tiletodraw].format>tf4Bit))
                 overtiletranslucent16(dest,tiletodraw,x+16*woff,y+16*hoff,cset,c.flip,opacity);
             else
             {
@@ -2144,6 +2154,8 @@ void overcomboblocktranslucent(BITMAP *dest, int32_t x, int32_t y, int32_t cid, 
 
 void puttile8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t flip)
 {
+	if(!valid_tile8(tile))
+		return;
     if(x<-7 || y<-7)
         return;
         
@@ -2239,6 +2251,8 @@ void puttile8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t
 
 void oldputtile8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t flip)
 {
+	if(!valid_tile8(tile))
+		return;
     if(x<-7 || y<-7)
         return;
         
@@ -2332,6 +2346,8 @@ void oldputtile8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int3
 
 void overtile8(BITMAP* dest,int32_t tile,int32_t x,int32_t y,int32_t cset,int32_t flip)
 {
+	if(!valid_tile8(tile))
+		return;
 	int w = 8;
 	int cl = 0;
 	int ct = 0;
@@ -2880,7 +2896,7 @@ void putcombo(BITMAP* dest,int32_t x,int32_t y,int32_t cid,int32_t cset)
     auto& c = combobuf[cid];
     int32_t drawtile=combo_tile(c, x, y);
     
-    if(!c.using_cs2() || (newtilebuf[drawtile].format>tf4Bit))
+    if(!c.using_cs2() || unsigned(drawtile) >= NEWMAXTILES || (newtilebuf[drawtile].format>tf4Bit))
         puttile16(dest,drawtile,x,y,cset,c.flip);
     else
     {
@@ -2921,7 +2937,7 @@ void overcomboblock(BITMAP *dest, int32_t x, int32_t y, int32_t cid, int32_t cse
             if(tiletodraw%TILES_PER_ROW<woff) // Past the end?
                 tiletodraw+=TILES_PER_ROW*c.skipanimy;
                 
-            if(!c.using_cs2() || (newtilebuf[tiletodraw].format>tf4Bit))
+            if(!c.using_cs2() || unsigned(tiletodraw) >= NEWMAXTILES || (newtilebuf[tiletodraw].format>tf4Bit))
                 overtile16(dest,tiletodraw,x+16*woff,y+16*hoff,cset,c.flip);
             else
             {

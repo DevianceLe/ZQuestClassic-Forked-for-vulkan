@@ -679,7 +679,7 @@ void zmap::setCurrMap(int32_t index)
 	scrview[cursor.map] = cursor.viewscr;
 
 	auto new_cursor = cursor;
-	new_cursor.map = bound(index,0,map_count);
+	new_cursor.map = vbound(index, 0, map_count - 1);
 
 	new_cursor.viewscr = scrview[new_cursor.map];
 	new_cursor.setScreen(scrpos[new_cursor.map]);
@@ -5216,9 +5216,11 @@ void zmap::goto_dmapscr(int dmap, int scr)
 }
 void zmap::goto_mapscr(int map, int scr)
 {
+	// The destination may not exist: a warp to a DMap whose map was removed, or a map
+	// tab left over from a quest with more maps.
 	auto new_cursor = cursor;
-	new_cursor.map = map;
-	new_cursor.setScreen(scr);
+	new_cursor.map = vbound(map, 0, map_count - 1);
+	new_cursor.setScreen(vbound(scr, 0, MAPSCRS - 1));
 	setCursor(std::move(new_cursor));
 }
 
@@ -6076,6 +6078,9 @@ bool setMapCount2(int32_t c)
     bound(cur_map,0,c-1);
     if(map_count>oldmapcount)
     {
+        // Visiting each new map to clear it is not something the user did, so keep
+        // it out of the screen history.
+        Map.ConfigureCursorHistory(false);
         for(int32_t mc=oldmapcount; mc<map_count; mc++)
         {
 			// copy the default palette to the new maps
@@ -6086,6 +6091,7 @@ bool setMapCount2(int32_t c)
                 Map.clearscr(ms);
         }
         Map.setCurrMap(cur_map);
+        Map.ConfigureCursorHistory(true);
     }
     else
     {
@@ -12035,63 +12041,60 @@ int32_t write_quest_zasm(PACKFILE *f)
 
 	auto& zasm = zasm_scripts[0]->zasm;
 	auto& literals = zasm_scripts[0]->literals;
-    size_t num_commands = zasm.size();
-    
-    if(!p_iputl(num_commands,f))
-        new_return(1);
-	
-    for(int32_t j=0; j<num_commands; j++)
-    {
-        auto& zas = zasm[j];
-        
-        if(zas.command==0xFFFF)
-            continue;
-        else
-        {
-			if(!p_iputw(zas.command,f))
-				new_return(2);
-			
-            if(!p_iputl(zas.arg1,f))
-                new_return(3);
-            
-            if(!p_iputl(zas.arg2,f))
-                new_return(4);
-            
-            if(!p_iputl(zas.arg3,f))
-                new_return(5);
-			
-			auto strptr = literals.str(zas);
-			auto vecptr = literals.vec(zas);
-			uint32_t sz = 0;
-			if(strptr)
-				sz = strptr->size();
-			if(!p_iputl(sz,f))
-				new_return(6);
-			if(sz)
+	size_t num_commands = zasm.size();
+
+	// Write every command, terminators included: a script's pc, end_pc and jump targets are
+	// positions in this list, so leaving any out would shift everything after it.
+	if(!p_iputl(num_commands,f))
+		new_return(1);
+
+	for(size_t j=0; j<num_commands; j++)
+	{
+		auto& zas = zasm[j];
+
+		if(!p_iputw(zas.command,f))
+			new_return(2);
+
+		if(!p_iputl(zas.arg1,f))
+			new_return(3);
+
+		if(!p_iputl(zas.arg2,f))
+			new_return(4);
+
+		if(!p_iputl(zas.arg3,f))
+			new_return(5);
+
+		auto strptr = literals.str(zas);
+		auto vecptr = literals.vec(zas);
+		uint32_t sz = 0;
+		if(strptr)
+			sz = strptr->size();
+		if(!p_iputl(sz,f))
+			new_return(6);
+		if(sz)
+		{
+			auto& str = *strptr;
+			for(size_t q = 0; q < sz; ++q)
 			{
-				auto& str = *strptr;
-				for(size_t q = 0; q < sz; ++q)
-				{
-					if(!p_putc(str[q],f))
-						new_return(7);
-				}
+				if(!p_putc(str[q],f))
+					new_return(7);
 			}
-			sz = 0;
-			if(vecptr)
-				sz = vecptr->size();
-			if(!p_iputl(sz,f))
-				new_return(8);
-			if(sz) //vector found
+		}
+		sz = 0;
+		if(vecptr)
+			sz = vecptr->size();
+		if(!p_iputl(sz,f))
+			new_return(8);
+		if(sz) //vector found
+		{
+			auto& vec = *vecptr;
+			for(size_t q = 0; q < sz; ++q)
 			{
-				auto& vec = *vecptr;
-				for(size_t q = 0; q < sz; ++q)
-				{
-					if(!p_iputl(vec[q],f))
-						new_return(9);
-				}
+				if(!p_iputl(vec[q],f))
+					new_return(9);
 			}
-        }
-    }
+		}
+	}
 	return 0;
 }
 

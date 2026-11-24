@@ -16,6 +16,7 @@
 #include "zc/scripting/arrays.h"
 #include "zc/scripting/types/musicdata.h"
 #include "advanced_music.h"
+#include "zc/scripting/zasm_check.h"
 #include "zc/zelda.h"
 #include "zc/scripting/script_object.h"
 
@@ -45,6 +46,48 @@ void do_getsavename()
 	int32_t arrayptr = get_register(sarg1);
 	
 	ArrayH::setArray(arrayptr, string(game->get_name()));
+}
+
+// Sets the number of subscreens in a list. Adding or removing subscreens moves them in memory, so
+// the engine's pointers into the list are found again by their index - or cleared, if their
+// subscreen was removed. This keeps an open (or queued) subscreen that isn't the dmap's.
+static void resize_subscreen_list(std::vector<ZCSubscreen>& list, byte sub_type, int32_t value)
+{
+	if (value < 0)
+		return;
+
+	size_t sz = vbound(value/10000, 0, 256);
+	if (sz == list.size())
+		return;
+
+	ZCSubscreen** pointers[] = {&new_subscreen_active, &new_subscreen_passive,
+		&new_subscreen_overlay, &new_subscreen_map, &FFCore.queued_subscreen};
+	int indices[std::size(pointers)];
+	for (size_t i = 0; i < std::size(pointers); ++i)
+	{
+		indices[i] = -1;
+		for (size_t q = 0; q < list.size(); ++q)
+		{
+			if (*pointers[i] == &list[q])
+			{
+				indices[i] = q;
+				break;
+			}
+		}
+	}
+
+	while (list.size() < sz)
+		list.emplace_back().sub_type = sub_type;
+	while (list.size() > sz)
+		list.pop_back();
+
+	for (size_t i = 0; i < std::size(pointers); ++i)
+	{
+		if (indices[i] >= 0)
+			*pointers[i] = size_t(indices[i]) < sz ? &list[indices[i]] : nullptr;
+	}
+	if (new_sub_indexes[sub_type] >= int(sz))
+		new_sub_indexes[sub_type] = -1;
 }
 
 void do_getscreenflags()
@@ -582,7 +625,7 @@ int32_t game_get_register(int32_t reg)
 			break;
 		}
 
-		default: NOTREACHED();
+		default: ZASM_NOTREACHED();
 	}
 
 	return ret;
@@ -649,6 +692,8 @@ void game_set_register(int32_t reg, int32_t value)
 			break;
 			
 		case GAMECONTDMAP:
+			if (BC::checkDMapID(value/10000) != SH::_NoError)
+				break;
 			game->set_continue_dmap(value/10000);
 			break;
 			
@@ -657,6 +702,8 @@ void game_set_register(int32_t reg, int32_t value)
 			break;
 			
 		case GAMEENTRDMAP:
+			if (BC::checkDMapID(value/10000) != SH::_NoError)
+				break;
 			lastentrance_dmap=value/10000;
 			break;
 		
@@ -680,7 +727,7 @@ void game_set_register(int32_t reg, int32_t value)
 
 		case COMBODDM:
 		{
-			value = vbound(value/10000,0,MAXCOMBOS);
+			value = vbound(value/10000,0,MAXCOMBOS-1);
 			auto result = ResolveGameScreens("Game->SetComboData");
 			if (result.canonical_rpos_handle)
 				result.canonical_rpos_handle.set_data(value);
@@ -756,6 +803,12 @@ void game_set_register(int32_t reg, int32_t value)
 				break;
 			}
 				
+			if(unsigned(value/10000) >= cMAX)
+			{
+				Z_scripterrlog("Invalid combo type (%d) passed to SetComboType", value/10000);
+				break;
+			}
+
 			int32_t cdata = TheMaps[screen].data[pos];
 			screen_combo_modify_pre(cdata);
 			combobuf[cdata].type=value/10000;
@@ -812,7 +865,7 @@ void game_set_register(int32_t reg, int32_t value)
 				Z_scripterrlog("Invalid combo position (%d) passed to GetSolid", pos);
 				break;
 			}
-			if(screen < 0) 
+			if(screen < 0 || screen >= TheMaps.size()) 
 			{
 				Z_scripterrlog("Invalid MapScreen ID (%d) passed to GetSolid", screen);
 				break;
@@ -842,65 +895,17 @@ void game_set_register(int32_t reg, int32_t value)
 		break;
 
 		case GAMENUMASUB:
-		{
-			if(value >= 0)
-			{
-				size_t sz = vbound(value/10000, 0, 256);
-				while(subscreens_active.size() < sz)
-				{
-					auto& sub = subscreens_active.emplace_back();
-					sub.sub_type = sstACTIVE;
-				}
-				while(subscreens_active.size() > sz)
-					subscreens_active.pop_back();
-			}
+			resize_subscreen_list(subscreens_active, sstACTIVE, value);
 			break;
-		}
 		case GAMENUMMSUB:
-		{
-			if(value >= 0)
-			{
-				size_t sz = vbound(value/10000, 0, 256);
-				while(subscreens_map.size() < sz)
-				{
-					auto& sub = subscreens_map.emplace_back();
-					sub.sub_type = sstMAP;
-				}
-				while(subscreens_map.size() > sz)
-					subscreens_map.pop_back();
-			}
+			resize_subscreen_list(subscreens_map, sstMAP, value);
 			break;
-		}
 		case GAMENUMOSUB:
-		{
-			if(value >= 0)
-			{
-				size_t sz = vbound(value/10000, 0, 256);
-				while(subscreens_overlay.size() < sz)
-				{
-					auto& sub = subscreens_overlay.emplace_back();
-					sub.sub_type = sstOVERLAY;
-				}
-				while(subscreens_overlay.size() > sz)
-					subscreens_overlay.pop_back();
-			}
+			resize_subscreen_list(subscreens_overlay, sstOVERLAY, value);
 			break;
-		}
 		case GAMENUMPSUB:
-		{
-			if(value >= 0)
-			{
-				size_t sz = vbound(value/10000, 0, 256);
-				while(subscreens_passive.size() < sz)
-				{
-					auto& sub = subscreens_passive.emplace_back();
-					sub.sub_type = sstPASSIVE;
-				}
-				while(subscreens_passive.size() > sz)
-					subscreens_passive.pop_back();
-			}
+			resize_subscreen_list(subscreens_passive, sstPASSIVE, value);
 			break;
-		}
 		case SCRIPTRAM:
 		case GLOBALRAM:
 			ArrayH::setElement(GET_D(rINDEX), GET_D(rINDEX2) / 10000, value);
@@ -928,7 +933,7 @@ void game_set_register(int32_t reg, int32_t value)
 			break;
 		}
 
-		default: NOTREACHED();
+		default: ZASM_NOTREACHED();
 	}
 }
 
@@ -1247,7 +1252,7 @@ static ArrayRegistrar GAMEMISCSFX_registrar(GAMEMISCSFX, []{
 static ArrayRegistrar GAMEMISCSPR_registrar(GAMEMISCSPR, []{
 	static ScriptingArray_GlobalCArray impl(QMisc.sprites, comptime_array_size(QMisc.sprites));
 	impl.compatSetDefaultValue(-10000);
-	impl.setValueTransform(transforms::vboundWord);
+	impl.setValueTransform(transforms::vbound<0, MAXSPRITES-1>);
 	impl.setMul10000(true);
 	return &impl;
 }());
@@ -1339,6 +1344,7 @@ static ArrayRegistrar DMAPLEVELD_registrar(DMAPLEVELD, []{
 	);
 	impl.compatSetDefaultValue(-10000);
 	impl.setMul10000(true);
+	impl.setValueTransform(transforms::validate<MAXLEVELS>);
 	return &impl;
 }());
 
@@ -1520,7 +1526,7 @@ static ArrayRegistrar GAMEGRAVITY_registrar(GAMEGRAVITY, []{
 					return zinit.jump_hero_layer_threshold * 10000;
 				case 3: //Air Drag
 					return zinit.air_drag.getZLong();
-				default: NOTREACHED();
+				default: ZASM_NOTREACHED();
 			}
 		},
 		[](int, int index, int value) {
@@ -1538,7 +1544,7 @@ static ArrayRegistrar GAMEGRAVITY_registrar(GAMEGRAVITY, []{
 				case 3: //Air Drag
 					zinit.air_drag = zslongToFix(value);
 					break;
-				default: NOTREACHED();
+				default: ZASM_NOTREACHED();
 			}
 
 			return true;

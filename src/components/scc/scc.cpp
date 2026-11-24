@@ -293,9 +293,9 @@ static bool compareStringsCaseIns(const std::string& str1, const std::string& st
 	if (str1.length() != str2.length())
 		return false;
 
-	for (int i = 0; i < str1.length(); ++i)
+	for (size_t i = 0; i < str1.length(); ++i)
 	{
-		if (tolower(str1[i]) != tolower(str2[i]))
+		if (tolower(static_cast<unsigned char>(str1[i])) != tolower(static_cast<unsigned char>(str2[i])))
 			return false;
 	}
 
@@ -339,7 +339,7 @@ static bool parse_ascii_scc_command(
 	// The source text of the command code, if it erroneously contained a decimal point.
 	std::optional<std::string> decimal_command;
 
-	if (isalpha(str[cur]))
+	if (isalpha(static_cast<unsigned char>(str[cur])))
 	{
 		if (auto r = lookup_string_command(str, cur, warnings))
 			code = *r;
@@ -360,9 +360,11 @@ static bool parse_ascii_scc_command(
 	if (!code)
 		consume_until_slash(str, cur);
 
-	cmd.code = code.value_or(0);
-	auto defn_it = scc_commands.find(cmd.code);
+	// Look up the full code before storing it as a byte, so a code that doesn't fit can't wrap
+	// around to a valid one.
+	auto defn_it = scc_commands.find(code.value_or(0));
 	bool is_unknown_command = defn_it == scc_commands.end();
+	cmd.code = is_unknown_command ? 0 : defn_it->first;
 	int min_args = is_unknown_command ? 0 : defn_it->second.min_args;
 	int max_args = is_unknown_command ? 0 : defn_it->second.max_args;
 	int found_num_args = 0;
@@ -560,6 +562,15 @@ value_and_warnings<ParsedMsgStr> parse_ascii_msg_str(const std::string& str)
 		literal_start_index = std::string_view::npos; 
 	};
 
+	// Helper to push an invalid segment. Invalid segments are serialized as-is, so the preceding
+	// literal is pushed separately to keep its escaping.
+	auto push_invalid = [&](size_t start_index, size_t end_index) {
+		push_literal(start_index);
+		literal_start_index = start_index;
+		is_parsing_invalid_segment = true;
+		push_literal(end_index);
+	};
+
 	while (cur < last)
 	{
 		// If we're not in a literal segment, start one at the current index.
@@ -570,9 +581,11 @@ value_and_warnings<ParsedMsgStr> parse_ascii_msg_str(const std::string& str)
 
 		if (c == '\n')
 		{
-			push_literal(cur++);
+			push_literal(cur);
 
 			auto& cmd = parsed_msg_str.commands.emplace_back();
+			cmd.start = cur++;
+			cmd.length = 1;
 			cmd.code = MSGC_NEWLINE;
 			parsed_msg_str.segment_types.push_back(ParsedMsgStr::SegmentType::Command);
 
@@ -589,24 +602,25 @@ value_and_warnings<ParsedMsgStr> parse_ascii_msg_str(const std::string& str)
 
 		if (c == '{')
 		{
-			push_literal(cur);
-			literal_start_index = cur;
+			size_t brace_start_index = cur;
 
 			// Consume until next unescaped }
 			cur++;
 			while (cur < str.size())
 			{
-				if (str[cur] == '}' && str[cur - 1] != '\\')
+				// Skip escaped characters, so that neither \} nor the second slash of \\ can
+				// end (or fail to end) the segment.
+				if (str[cur] == '\\' && cur + 1 < str.size())
 				{
-					cur++;
-					break;
+					cur += 2;
+					continue;
 				}
 
-				cur++;
+				if (str[cur++] == '}')
+					break;
 			}
 
-			is_parsing_invalid_segment = true;
-			push_literal(cur++);
+			push_invalid(brace_start_index, cur);
 			continue;
 		}
 
@@ -642,13 +656,8 @@ value_and_warnings<ParsedMsgStr> parse_ascii_msg_str(const std::string& str)
 
 		if (cur + 1 == last)
 		{
-			push_literal(cur);
-
 			warnings.push_back("Unexpected trailing slash (expected either a command or another slash)");
-			is_parsing_invalid_segment = true;
-			literal_start_index = cur;
-			cur++;
-			push_literal(cur);
+			push_invalid(cur, last);
 			break;
 		}
 
@@ -664,8 +673,7 @@ value_and_warnings<ParsedMsgStr> parse_ascii_msg_str(const std::string& str)
 		}
 		else
 		{
-			is_parsing_invalid_segment = true;
-			push_literal(cur);
+			push_invalid(command_start_index, cur);
 		}
 	}
 
@@ -841,6 +849,12 @@ value_and_warnings<ParsedMsgStr> parse_legacy_binary_msg_str(const std::string& 
 	return result;
 }
 
+bool ends_with_unescaped_slash(std::string_view text)
+{
+	size_t num_slashes = text.size() - (text.find_last_not_of('\\') + 1);
+	return num_slashes % 2;
+}
+
 std::string sanitize_pasted_msg_str_text(std::string_view text)
 {
 	std::string result;
@@ -853,8 +867,7 @@ std::string sanitize_pasted_msg_str_text(std::string_view text)
 
 		if (c == '\n')
 		{
-			// A '\' just before the command would escape its leading slash.
-			if (!result.empty() && result.back() == '\\')
+			if (ends_with_unescaped_slash(result))
 				result += ' ';
 			result += "\\Newline\\ ";
 			continue;
